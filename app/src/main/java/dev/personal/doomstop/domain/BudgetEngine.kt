@@ -47,12 +47,21 @@ object BudgetEngine {
     const val MAX_REPLAY_MS = 7L * 24L * 60L * 60L * 1000L
 
     /**
-     * How long visibility carried over from the previous checkpoint may be believed when
-     * no event contradicts it. Live ticks are ~1 s apart so this never binds in normal
-     * operation; it exists so that a silent multi-hour gap cannot be charged wholesale on
-     * the strength of a stale "Instagram was open" flag.
+     * The longest stretch of uninterrupted visibility that will be believed on the strength
+     * of a carried-over flag alone.
+     *
+     * Silence from the event stream is normally INFORMATIVE, not ignorance: while the event
+     * source is available, leaving an app produces ACTIVITY_PAUSED/STOPPED and locking the
+     * phone produces SCREEN_NON_INTERACTIVE. So the absence of those during a gap is real
+     * evidence that the app stayed on screen, and a process-death gap is reconstructed
+     * rather than forgiven -- which is what stops "kill the monitor and keep scrolling"
+     * from being free.
+     *
+     * Past this bound, though, the claim stops being credible. Rather than guess a large
+     * charge, the pass is refused: nothing is charged and the checkpoint goes UNCERTAIN, so
+     * targets are suspended and the PIN holder resolves it.
      */
-    const val MAX_ASSUMED_CONTINUOUS_VISIBILITY_MS = 120_000L
+    const val MAX_CONTINUOUS_VISIBLE_MS = 4L * 60L * 60L * 1000L
 
     /**
      * Reconcile everything that happened between [previous] and [tick] exactly once.
@@ -125,18 +134,32 @@ object BudgetEngine {
             initiallyVisible = false
         }
 
-        val slices = integrateVisible(
-            startWallMs = previous.lastWallMs,
-            durationMs = durationMs,
-            initiallyVisible = initiallyVisible,
-            transitions = transitions,
-            boundary = boundary,
-            onLeadingClamp = { clampedMs ->
+        val windowStartMs = previous.lastWallMs
+        val windowEndMs = windowStartMs + durationMs
+        val ordered = transitions
+            .filter { it.atWallMs in windowStartMs..windowEndMs }
+            .sortedBy { it.atWallMs }
+
+        // The leading segment is the only one whose visibility is inherited rather than
+        // observed, so it is the only one that can be implausibly long.
+        if (initiallyVisible) {
+            val firstEndOfVisibility = ordered.firstOrNull { !it.visible }?.atWallMs ?: windowEndMs
+            val leadingMs = firstEndOfVisibility - windowStartMs
+            if (leadingMs > MAX_CONTINUOUS_VISIBLE_MS) {
                 anomalies += Anomaly.UnreconciledGap(
-                    gapMs = clampedMs,
-                    reason = "no usage events to confirm continued visibility across a gap",
+                    gapMs = leadingMs,
+                    reason = "no event contradicted visibility for longer than is credible",
                 )
-            },
+                return Accounting(emptyList(), reanchor(previous, tick, CheckpointState.UNCERTAIN), anomalies)
+            }
+        }
+
+        val slices = integrateVisible(
+            startWallMs = windowStartMs,
+            endWallMs = windowEndMs,
+            initiallyVisible = initiallyVisible,
+            ordered = ordered,
+            boundary = boundary,
         )
 
         return Accounting(
@@ -163,48 +186,29 @@ object BudgetEngine {
      */
     private fun integrateVisible(
         startWallMs: Long,
-        durationMs: Long,
+        endWallMs: Long,
         initiallyVisible: Boolean,
-        transitions: List<VisibilityTransition>,
+        ordered: List<VisibilityTransition>,
         boundary: DayBoundary,
-        onLeadingClamp: (Long) -> Unit,
     ): List<DaySlice> {
-        if (durationMs <= 0) return emptyList()
-        val endWallMs = startWallMs + durationMs
-
-        val ordered = transitions
-            .filter { it.atWallMs in startWallMs..endWallMs }
-            .sortedBy { it.atWallMs }
+        if (endWallMs <= startWallMs) return emptyList()
 
         val totals = LinkedHashMap<DayId, Long>()
         var cursor = startWallMs
         var visible = initiallyVisible
-        var leadingSegment = true
 
         fun charge(from: Long, to: Long) {
-            if (to <= from) return
-            var effectiveTo = to
-            if (leadingSegment && visible) {
-                // Only the first segment inherits its visibility from the previous
-                // checkpoint rather than from an observed event, so only it needs the
-                // continuity clamp.
-                val span = to - from
-                if (span > MAX_ASSUMED_CONTINUOUS_VISIBILITY_MS) {
-                    effectiveTo = from + MAX_ASSUMED_CONTINUOUS_VISIBILITY_MS
-                    onLeadingClamp(span - MAX_ASSUMED_CONTINUOUS_VISIBILITY_MS)
-                }
-            }
-            if (visible) {
-                for (slice in boundary.split(from, effectiveTo - from)) {
-                    totals[slice.dayId] = (totals[slice.dayId] ?: 0L) + slice.durationMs
-                }
+            if (to <= from || !visible) return
+            for (slice in boundary.split(from, to - from)) {
+                totals[slice.dayId] = (totals[slice.dayId] ?: 0L) + slice.durationMs
             }
         }
 
         for (transition in ordered) {
+            // A transition that does not change the state contributes nothing, which is
+            // what makes duplicated and replayed events harmless.
             if (transition.visible == visible) continue
             charge(cursor, transition.atWallMs)
-            leadingSegment = false
             cursor = transition.atWallMs
             visible = transition.visible
         }

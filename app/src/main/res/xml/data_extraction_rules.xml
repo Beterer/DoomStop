@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Backup and device transfer are both refused outright.
+
+  Plan section 8 requires it: this app's data directory holds the PIN verifier, the
+  throttling counters and the day's balance. Letting any of that leave the device, or be
+  restored onto another one, would both weaken a six-digit secret and offer an obvious way
+  to roll the balance back to an earlier state.
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="root" />
+        <exclude domain="database" />
+        <exclude domain="sharedpref" />
+        <exclude domain="file" />
+        <exclude domain="external" />
+        <exclude domain="device_root" />
+        <exclude domain="device_database" />
+        <exclude domain="device_sharedpref" />
+        <exclude domain="device_file" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="root" />
+        <exclude domain="database" />
+        <exclude domain="sharedpref" />
+        <exclude domain="file" />
+        <exclude domain="external" />
+        <exclude domain="device_root" />
+        <exclude domain="device_database" />
+        <exclude domain="device_sharedpref" />
+        <exclude domain="device_file" />
+    </device-transfer>
+</data-extraction-rules>

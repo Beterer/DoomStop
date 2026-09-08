@@ -1,3 +1,16 @@
 <resources>
     <string name="app_name">DoomStop</string>
+
+    <!-- Ongoing monitor notification -->
+    <string name="notification_channel_name">Time remaining</string>
+    <string name="notification_channel_description">Shows the shared social-media time left today. Silent and permanent.</string>
+    <string name="notification_starting">DoomStop starting…</string>
+    <string name="notification_remaining">%1$s left today</string>
+    <string name="notification_used_up">Social apps paused for today</string>
+    <string name="notification_unhealthy">Monitoring unavailable — apps paused</string>
+    <string name="notification_recovery">Needs attention — apps paused</string>
+    <string name="notification_setup_incomplete">Setup is not finished; nothing is enforced yet</string>
+    <string name="notification_counting">Counting now</string>
+    <string name="notification_idle">Not counting · %1$s allowance today</string>
+    <string name="notification_action_open">Open</string>
 </resources>

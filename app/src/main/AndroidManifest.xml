@@ -72,6 +72,7 @@
     <application
         android:name=".DoomStopApp"
         android:allowBackup="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher_round"
@@ -82,13 +83,79 @@
         <activity
             android:name=".MainActivity"
             android:exported="true"
-            android:launchMode="singleTask"
-            android:label="@string/app_name">
+            android:launchMode="singleTask">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!--
+          Device administrator. BIND_DEVICE_ADMIN is what stops any other app from
+          impersonating this receiver; the system is the only permitted caller.
+        -->
+        <receiver
+            android:name=".admin.LimiterAdminReceiver"
+            android:exported="true"
+            android:permission="android.permission.BIND_DEVICE_ADMIN">
+            <meta-data
+                android:name="android.app.device_admin"
+                android:resource="@xml/device_admin_receiver" />
+            <intent-filter>
+                <action android:name="android.app.action.DEVICE_ADMIN_ENABLED" />
+            </intent-filter>
+        </receiver>
+
+        <!--
+          systemExempted is the type a device-owner app qualifies for; specialUse is the
+          honest pre-provisioning fallback so metering can be measured before any reset.
+        -->
+        <service
+            android:name=".monitor.UsageMonitorService"
+            android:exported="false"
+            android:foregroundServiceType="systemExempted|specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Continuous on-device metering of the user's own social-media usage against a locally configured daily limit, before device-owner provisioning grants the systemExempted type." />
+        </service>
+
+        <!--
+          directBootAware so suspension can be re-applied before the first unlock. Only
+          this receiver is direct-boot aware; nothing it touches before unlock reads
+          credential-protected storage.
+        -->
+        <receiver
+            android:name=".monitor.BootReceiver"
+            android:exported="true"
+            android:directBootAware="true">
+            <intent-filter>
+                <action android:name="android.intent.action.LOCKED_BOOT_COMPLETED" />
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+
+        <!--
+          Manifest package receivers cover the cold-start case. On modern Android most
+          implicit broadcasts do not reach manifest receivers, so the monitor service ALSO
+          registers these at runtime, where they do arrive. Behaviour on the target SDK is
+          measured and recorded in the test report rather than assumed.
+        -->
+        <receiver
+            android:name=".monitor.PackageChangeReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.PACKAGE_ADDED" />
+                <action android:name="android.intent.action.PACKAGE_REPLACED" />
+                <action android:name="android.intent.action.PACKAGE_REMOVED" />
+                <data android:scheme="package" />
+            </intent-filter>
+        </receiver>
+
+        <!-- Backup enforcement deadline; only ever triggered by this app's own alarms. -->
+        <receiver
+            android:name=".monitor.DeadlineReceiver"
+            android:exported="false" />
 
     </application>
 

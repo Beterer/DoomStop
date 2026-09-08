@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Device administrator declaration.
+
+  The policy list is intentionally empty. The capabilities this app actually uses (package
+  suspension, application restrictions, uninstall blocking, user-control protection) come
+  from being the DEVICE OWNER, not from these legacy admin policies. Requesting password,
+  wipe or lock policies here would claim authority over the phone that the design
+  explicitly does not want.
+-->
+<device-admin xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-policies />
+</device-admin>
