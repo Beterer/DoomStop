@@ -1,0 +1,27 @@
+# Gradle / build output
+.gradle/
+build/
+/captures/
+.externalNativeBuild/
+.cxx/
+
+# Local machine configuration -- never commit (contains SDK paths)
+local.properties
+
+# IDE
+*.iml
+.idea/
+!.idea/
+.idea/*
+!.idea/codeStyles/
+!.idea/inspectionProfiles/
+
+# Signing material. NEVER commit keystores or their passwords.
+*.jks
+*.keystore
+keystore.properties
+signing.properties
+
+# OS noise
+.DS_Store
+Thumbs.db
