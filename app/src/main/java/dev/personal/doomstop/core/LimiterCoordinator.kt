@@ -955,6 +955,26 @@ class LimiterCoordinator(
         return seeded
     }
 
+    /**
+     * This app's own anti-removal controls, read back from the platform every pass.
+     *
+     * Deliberately not the cached result of the last time they were applied: that lives in
+     * memory, so after a reboot the app would have reported its own protection as missing
+     * until setup was run again. Any error from the last write is carried through, because
+     * the state alone would not say why it is wrong.
+     */
+    private fun currentSelfProtection(requested: Boolean): SelfProtectionReport? {
+        if (!policy.isDeviceOwner) return lastSelfProtection
+        val uninstallBlocked = policy.readUninstallBlocked() ?: return lastSelfProtection
+        val controlled = policy.readUserControlDisabledPackages() ?: return lastSelfProtection
+        return SelfProtectionReport(
+            requested = requested,
+            uninstallBlocked = uninstallBlocked,
+            userControlDisabled = context.packageName in controlled,
+            error = lastSelfProtection?.error,
+        )
+    }
+
     private fun currentHealth(usageAvailable: Boolean) = MonitorHealth(
         deviceOwner = policy.isDeviceOwner,
         usageAccessGranted = usageAvailable && reader.hasUsageAccess(),
@@ -1017,7 +1037,9 @@ class LimiterCoordinator(
             installedBlockedBrowsers = policy.installedBlockedBrowsers(),
             suspension = lastSuspensionReport,
             chrome = lastChromeReport,
-            selfProtection = lastSelfProtection,
+            selfProtection = currentSelfProtection(
+                requested = settingsEntity.setupCompleted && !settingsEntity.maintenanceMode,
+            ),
             activeRestrictions = policy.activeRestrictions(),
             tracker = tracker.snapshot(),
             pinSet = dao.pinVerifier() != null,

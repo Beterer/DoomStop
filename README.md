@@ -20,12 +20,14 @@ Built to [`docs/social-limit-implementation-plan.md`](docs/social-limit-implemen
 | Area | State |
 |---|---|
 | Application, accounting core, enforcement, PIN, UI | Implemented |
-| Unit tests (61) | Passing |
+| Unit tests (86, JVM only) | Passing |
+| Instrumented tests (55, emulator) | Passing |
 | Android lint | Clean |
 | Gate A — device-owner provisioning | See `docs/test-report.md` |
 | Gate B — actual app suspension | See `docs/test-report.md` |
 | Gate C — Chrome policy without an enterprise backend | See `docs/test-report.md` |
 | Gate D — usage observation and background survival | See `docs/test-report.md` |
+| Code review of 2026-09-08 (findings F1-F8) | Fixed and covered by regression tests |
 | Provisioning on the real Pixel 9 | **Blocked** — requires a factory reset, not yet authorised |
 
 `docs/test-report.md` records what was measured, on what, and what is still unverified.
@@ -46,7 +48,20 @@ Stated plainly, because a limiter that overstates its reach is worse than none:
   installed browser has a short launchable window. It is measured, not hidden.
 - **Chrome URL policy is not a firewall.** It has documented limits for dynamic pages and
   for tasks already in flight, and it does not retroactively erase a page that is already
-  open.
+  open. The readiness line "Chrome policy stored and read back" means the value in
+  DevicePolicyManager is the one this app intended to store — **not** that Chrome has
+  accepted it. That second question is answered only by opening a blocked host, which is a
+  manual check.
+- **Accounting trails the present by thirty seconds.** Usage events are not always queryable
+  the instant they occur, so charges are committed on a lag and the unsettled tail is only
+  estimated. Enforcement still uses the estimate, so cut-off accuracy is unaffected; what
+  the lag buys is that a late event corrects an interval before anything is written for it.
+- **The accounting clock is not the phone's clock.** It advances by measured elapsed time,
+  and the system clock is adopted only while the two agree. A larger disagreement is refused
+  and needs the PIN holder, which also means a genuinely corrected clock needs acknowledging.
+- **A target that stays paused-but-never-stopped ends in a question, not an answer.** After
+  ten minutes the observer refuses to interpret it, suspends the targets and asks the PIN
+  holder, rather than silently deciding the app went away.
 - **A controller can be killed or delayed by the OS.** Suspension that is already applied
   persists, but a crash while apps are allowed does not suspend them by magic. Gaps are
   reconciled from usage events on restart; an unreconstructable gap suspends the apps and
@@ -89,18 +104,27 @@ Three details are not free choices and will break the build if changed independe
 
 ```bash
 ./gradlew :app:assembleDebug          # debug build
-./gradlew :app:testDebugUnitTest      # 61 unit tests, no device needed
+./gradlew :app:testDebugUnitTest      # 86 unit tests, no device needed
 ./gradlew :app:lintDebug              # lint
-./gradlew :app:connectedDebugAndroidTest   # database tests, needs a device or emulator
+./gradlew :app:connectedDebugAndroidTest   # 55 tests, needs a device or emulator
 ./gradlew :app:assembleRelease        # release build (needs keystore.properties)
 ```
 
 ### Release signing
 
 `app/build.gradle.kts` reads `keystore.properties` from the repository root. That file and
-every `*.jks` / `*.keystore` are gitignored, and there is no fallback to the debug key: an
-unsigned release build fails rather than quietly producing something that cannot be
-installed over the provisioned app.
+every `*.jks` / `*.keystore` are gitignored, and there is no fallback to the debug key.
+`assembleRelease` and `bundleRelease` depend on a `verifyReleaseSigning` check that **fails
+the build** when no key is configured, rather than quietly producing an APK that cannot be
+installed over the provisioned app:
+
+```
+> No keystore.properties: this release APK would be unsigned and could not be installed
+  over the provisioned build.
+```
+
+`-PallowUnsignedRelease=true` is the deliberate escape hatch for inspecting an unsigned
+artifact during development. The build that goes on the phone must not use it.
 
 ```properties
 storeFile=../doomstop-release.jks

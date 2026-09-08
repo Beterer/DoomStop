@@ -72,19 +72,32 @@ step, and only after you have confirmed a signed update installs in place.
 Open DoomStop. It shows a readiness checklist and will not display "Protected" until every
 line passes.
 
-| Line | How to satisfy it |
+Five lines are **prerequisites**: the button that starts enforcement stays disabled until
+they pass, and they are checked again when it is pressed rather than only when the screen
+was drawn.
+
+| Line | Prerequisite | How to satisfy it |
+|---|---|---|
+| Device owner | yes | Provisioned in step 2. |
+| Usage access | yes | Tap **Grant Usage access**. Device ownership does not grant this; it must be switched on by hand under Settings → Apps → Special app access → Usage access. |
+| Monitor running | yes | Tap **Start the monitor**. |
+| PIN set | yes | **The trusted person** taps **Set the six-digit PIN** and enters it twice, out of sight of the phone user. The keypad is drawn inside the app, so the PIN never reaches keyboard prediction or autofill. |
+| Accounting history complete | yes | Satisfied on a fresh install. |
+| Notification shown | no | Allow notifications when prompted. The notification is silent and permanent, and is a reliable way back into the app when a target is paused. |
+
+The remaining lines are **outcomes** of switching enforcement on, so they cannot be green
+beforehand. After pressing the button, check that they are:
+
+| Line | What it means |
 |---|---|
-| Device owner | Provisioned in step 2. |
-| Usage access | Tap **Grant Usage access**. Device ownership does not grant this; it must be switched on by hand under Settings → Apps → Special app access → Usage access. |
-| Monitor running | Tap **Start the monitor**. |
-| Notification shown | Allow notifications when prompted. The notification is silent and permanent, and is a reliable way back into the app when a target is paused. |
-| PIN set | **The trusted person** taps **Set the six-digit PIN** and enters it twice, out of sight of the phone user. The keypad is drawn inside the app, so the PIN never reaches keyboard prediction or autofill. |
-| Chrome site policy verified | Applied automatically. **Close any open Instagram / TikTok / Reddit tabs and restart Chrome**, then re-check — policy does not retroactively erase a page that is already loaded. |
-| Target suspension applied | Applied automatically once the three apps are installed. |
-| Accounting history complete | Satisfied on a fresh install. |
+| Chrome policy stored and read back | The blocklist DevicePolicyManager holds is the one this app intended to store. **It does not mean Chrome accepted it.** Close any open Instagram / TikTok / Reddit tabs, restart Chrome, then confirm by opening one of the sites and at `chrome://policy`. |
+| Target suspension applied | Every installed target and blocked browser reads back in the state that was asked for. |
+| This app cannot be uninstalled | Uninstall blocking is in force. Without it the limiter can simply be removed, so a red line here means you are not protected regardless of what else is green. |
+| Task-manager controls disabled for this app | Force-stop and clear-data are blocked. Not supported on every platform build; reported separately for that reason. |
 
 Then press **Finish setup and start enforcing**. Nothing is enforced before this point,
 though metering already runs, so the first enforced day starts from a monitor known to work.
+The app reports "Protected" only when every line above is green.
 
 Optionally verify Chrome independently: open `chrome://policy` and look for `URLBlocklist`.
 
@@ -100,6 +113,10 @@ expires at the next reset.
 - Opening Instagram, TikTok or Reddit starts counting. There is no Start button.
 - Switching away, locking the phone or turning the screen off stops counting.
 - Two of them visible at once still costs one second per second.
+- An app that pauses without stopping — the picture-in-picture case — keeps costing time for
+  up to ten minutes. Past that the app cannot tell whether it is still on screen, so it stops
+  guessing: the targets are paused and the PIN holder is asked (see section 9). Turning the
+  screen off resolves it without any of that.
 - When the shared allowance runs out, all three are paused. Android shows **"Blocked by
   work policy"**.
 - **Request more time** asks for the PIN and adds exactly one extension. A fresh PIN entry
@@ -124,24 +141,49 @@ What is left, in order of preference:
 
 Wrong attempts are throttled: five free, then a 30-second lock that doubles up to 30
 minutes. The counter and the deadline are stored on disk, so rebooting does not clear them,
-and moving the clock backwards does not shorten a lock. Wrong attempts never affect ordinary
-phone use.
+and the deadline is recorded against **both** clocks — moving the date backwards *or*
+forwards does not shorten a lock. Wrong attempts never affect ordinary phone use.
+
+The trusted person's session is short by design. It ends after two minutes of inactivity,
+when you leave the settings screen, and as soon as DoomStop stops being the app on screen —
+pressing Home, switching apps or locking the phone all end it. Handing the phone back
+therefore does not hand back an open settings screen. Rotating the phone does not sign you
+out.
 
 ## 6. Removing DoomStop cleanly
 
 Settings → PIN → **Maintenance and removal**. Two options, both confirmed explicitly:
 
 - **Restore access, keep device ownership** — unsuspends the apps and browsers this app
-  suspended, puts Chrome's blocklist back to its recorded previous value, clears the user
-  restrictions this app set, and drops its own uninstall protection. DoomStop stays the
-  device owner, so protection can be switched back on without another reset.
+  suspended, puts Chrome's blocklist back to its recorded previous value, restores the user
+  restrictions and the automatic-time setting to what they were, and drops its own uninstall
+  protection. DoomStop stays the device owner, so protection can be switched back on without
+  another reset.
 - **Restore access and release device ownership** — as above, then gives up ownership. After
   this, the app can be uninstalled normally. **Regaining device ownership later requires
   another factory reset**, because provisioning needs a device that has not finished setup.
 
-Only what DoomStop changed is restored. Unrelated Chrome restrictions and packages it never
-suspended are left alone; the previous values come from a ledger written when the app first
-touched each setting, not from guesswork.
+Only what DoomStop changed is restored. Unrelated Chrome restrictions, other apps' entries in
+the task-manager control list, and packages it never suspended are all left alone; the
+previous values come from a ledger written **before** the app first changed each setting, not
+from guesswork.
+
+### If a step fails
+
+Restore runs as a sequence of verified steps, and stops at the first one that does not
+verify. When that happens:
+
+- **Device ownership is kept**, and is not even attempted. Releasing it is the one action
+  that cannot be retried, so it only happens after every earlier step has succeeded.
+- The device is left in **maintenance mode**: DoomStop deliberately stops asserting any
+  policy, so the monitor cannot fight the restore. **The phone is unprotected while this
+  lasts.** The status screen says so in plain words.
+- The settings screen names the step that failed. Fix the cause and press the same button
+  again, or press **Cancel maintenance and resume enforcing** to put things back as they were.
+
+If a package's suspension state before DoomStop existed could not be read, restore says so
+and leaves that package alone rather than guessing. A checkbox appears offering to release
+those as well; that is your decision to make, not the app's.
 
 ## 7. Updating
 
@@ -178,6 +220,11 @@ and build:
 .\gradlew.bat :app:assembleRelease
 ```
 
+Without `keystore.properties` this fails on purpose, naming the missing file: an unsigned
+release APK cannot be installed over the provisioned app, so producing one quietly would be
+worse than not producing one. `-PallowUnsignedRelease=true` exists for inspecting an
+unsigned artifact during development and must not be used for the phone's build.
+
 ## 8. Optional extra restrictions
 
 Under Settings, all off by default. Each closes a specific bypass at a cost:
@@ -186,7 +233,7 @@ Under Settings, all off by default. Each closes a specific bypass at a cost:
 |---|---|---|
 | Block adding users and profiles | A second user with unsuspended apps | No guest mode or work profile |
 | Block safe boot | Booting without the controller running | No safe boot |
-| Block manual date and time changes | Clock games around the day boundary | Time must stay automatic |
+| Block manual date and time changes | Clock games *across a reboot* — within one boot they are already refused, because accounting advances by measured elapsed time rather than by the phone's clock | Time must stay automatic |
 | Block USB debugging | `adb` removal of policy | **Do not enable until you have confirmed a signed update installs in place.** Losing debugging before that is the one mistake with no easy way back. |
 
 App installation is never restricted, and no blanket lockdown of settings, the Play Store,
@@ -194,13 +241,31 @@ VPNs, camera, calls or notifications is applied.
 
 ## 9. When something looks wrong
 
-Setup & diagnostics names the failing capability and what to do about it. Two states are
+Setup & diagnostics names the failing capability and what to do about it. Three states are
 worth understanding:
 
 - **"Monitoring unavailable — apps paused."** Usage access was revoked or the monitor is not
   running. The apps are paused deliberately: an allowance nobody is counting is not an
   allowance. Re-grant usage access and start the monitor.
+- **"Maintenance — not enforcing."** A restore was started and did not finish. Nothing is
+  being enforced. Retry it or cancel it from Settings (section 6).
 - **"Needs attention — apps paused."** A stretch of time could not be reconstructed, so the
-  app refuses to guess. Settings → **Acknowledge and resume** re-anchors accounting from
-  now. Time already charged today is kept; no missing time is invented and no fresh
-  allowance is granted.
+  app refuses to guess. This is **latched**: it does not clear itself when the problem goes
+  away, because a later successful reading says nothing about the interval that was missed.
+  Settings → **Acknowledge and resume** is the only thing that clears it.
+
+The acknowledgement screen names what happened and over what period, so you are not being
+asked to approve an anonymous error. The usual causes are:
+
+| What it says | What happened |
+|---|---|
+| the usage-event source was unreadable for a stretch of time | Usage access was revoked, or the query failed for longer than one poll. |
+| the system clock jumped forward / backwards relative to elapsed time | The date was changed, or the clock was corrected by more than five seconds. |
+| a target stayed paused without stopping for longer than the observer can interpret | See section 4: usually picture-in-picture, or a lost `STOPPED` event. |
+| a target was on screen when the monitor stopped and its state could not be recovered | The saved observer state was unreadable, which should only happen after an upgrade from a much older build. |
+| the clock advanced further across a reboot than a power-off explains | The phone was off for more than a day, or the date was changed while it was off. |
+
+Acknowledging re-anchors accounting from now. Time already charged today is kept; no missing
+time is invented and no fresh allowance is granted. One caveat worth knowing: acknowledging
+also adopts the phone's **current** clock, and the anchor is what decides which accounting
+day is current. **If the clock is wrong, correct it before acknowledging.**

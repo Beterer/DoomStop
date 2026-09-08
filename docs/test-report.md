@@ -1,7 +1,22 @@
 # DoomStop — test report
 
-Prepared 2026-09-08. This records what was actually run, on what, and what has not been
-verified. Where a result is a measurement it is the measured number, not a target.
+Prepared 2026-09-08, revised 2026-09-09 after the code review in section 7. This records
+what was actually run, on what, and what has not been verified. Where a result is a
+measurement it is the measured number, not a target.
+
+### How to read a "pass" here
+
+Four kinds of evidence appear below and they are **not** interchangeable. Every row in the
+acceptance matrix names which one it rests on.
+
+| Class | What it means | What it cannot show |
+|---|---|---|
+| **engine** | A JVM unit test of the pure accounting core against an injected clock. | Anything about persistence, the platform, or several passes in sequence. |
+| **coordinator** | An instrumented test: real Room database, several sequential passes, and a coordinator rebuilt from the persisted state the way a restarted process rebuilds it. Device policy is faked so failures can be injected. | That the real DevicePolicyManager behaves as the fake does. |
+| **emulator** | An instrumented test against a genuinely provisioned device owner on AVD `doomstop36`, with stub packages standing in for the three apps. | Hardware behaviour, one API level up, with the real apps. |
+| **device** | Run on the Pixel 9. | — |
+
+**No row in this report is class "device".** The phone has not been provisioned.
 
 ---
 
@@ -68,17 +83,30 @@ in the scratch directory, are never distributed, and were never installed on the
 
 | Suite | Count | Result |
 |---|---|---|
-| Unit (`testDebugUnitTest`), no device | 61 | all pass |
-| Instrumented (`connectedDebugAndroidTest`), emulator as device owner | 28 | all pass |
-| Android lint (`lintDebug`, `lintRelease`) | — | clean (2 informational notices about deliberately pinned versions) |
-| Release build | — | `app-release-unsigned.apk`, 23.7 MB, not debuggable, not test-only, `allowBackup=false` |
+| Unit (`testDebugUnitTest`), no device — class **engine** | 86 | all pass |
+| Instrumented (`connectedDebugAndroidTest`) — classes **coordinator** and **emulator** | 55 | all pass, none skipped |
+| Android lint (`lintDebug`, `lintRelease`) | — | clean |
+| Release build without a key | — | **fails**, by design: `verifyReleaseSigning` refuses to produce an uninstallable artifact |
+| Release build with `-PallowUnsignedRelease=true` | — | `app-release-unsigned.apk`, not debuggable, not test-only, `allowBackup=false` |
 
 Unit tests cover budget arithmetic, midnight splitting, a DST day that skips local midnight,
-rollover idempotence, boot/clock/monotonic anomalies, recovery states, tracker visibility
-semantics, and PIN throttling. Instrumented tests cover the database guarantees and the
-gates below.
+rollover idempotence, boot/clock/monotonic anomalies, latched recovery, the settled
+accounting window, observer serialization and visibility semantics, and PIN throttling
+against both clocks.
 
-**Two defects were found by tests rather than by inspection**, both described in section 6.
+Instrumented tests split into three files:
+
+- `data/LimiterDaoTest` and `data/MigrationTest` — database guarantees and the version 1 to
+  version 2 upgrade, including that an unresolved history is **not** resolved by an app update.
+- `core/CoordinatorRegressionTest` — the regressions from section 7, exercised the way they
+  actually occurred: many sequential passes against persisted state, a coordinator rebuilt
+  from that state, and injected policy failures.
+- `admin/PolicyControllerTest` and `core/EnforcementIntegrationTest` — the real
+  DevicePolicyManager against a provisioned emulator.
+
+**Four defects were found by tests or measurement rather than by inspection**: two in
+section 6, and two more that only surfaced once the review's regression tests existed
+(section 7.1).
 
 ---
 
@@ -233,39 +261,118 @@ between `LOCKED_BOOT_COMPLETED` and first unlock; battery impact of the one-seco
 
 ---
 
-## 7. Acceptance matrix
+## 7. Code review of 2026-09-08 — findings F1 to F8
 
-| Test | Required result | Status |
-|---|---|---|
-| Open any target without opening limiter | counting starts automatically | **pass** (emulator, real events) |
-| Instagram 20 s + Reddit 20 s + TikTok 20 s | shared allowance exhausted, all three suspended | **pass** (integration test, real suspension) |
-| Home / unrelated app / locked screen | no ongoing debit | **pass** |
-| Rapid switching and activity transitions | no duplicated or lost intervals | **pass** (unit + integration) |
-| Split-screen and PiP | visible target charged once | **partial** — multi-resume split-screen covered by test; not exercised on hardware |
-| Expiry while app open | unusable; cut-off ≤ 2 s | **pass — 683 ms** |
-| Notifications / recents / deep links after expiry | no access | **partial** — launch blocked; specific routes not walked |
-| Correct PIN | exactly one extension, sites still blocked | **pass** (UI flow end-to-end + integration test) |
-| Wrong PIN, repeated, reboot | no grant, persistent throttling | **pass** (unit tests; clock-rewind covered) |
-| Midnight while app open | interval split, exactly one reset | **pass** (unit + integration) |
-| Timezone / manual time change | no repeatable reset exploit | **pass** (integration: forward then back grants nothing) |
-| Reboot with exhausted/remaining allowance | balance retained, no fresh grant | **pass** (integration) |
-| Process death while target open | reconcile and resume | **pass** (unit); crash gap not measured on hardware |
-| Usage permission revoked | unhealthy state and suspension | **pass** |
-| Force-stop / clear-data / uninstall controller | settings bypass prevented | **partial** — uninstall refused, user-control disabled; force-stop and clear-data not exercised |
-| Chrome normal / incognito / mobile / old / short URLs | blocked permanently | **pass** |
-| Chrome policy after reboot / update / reinstall | remains effective or reapplied | **not verified** |
-| Target tab open before initial policy | setup closes/restarts; no retroactive claim | **not verified**; documented in setup |
-| Install known blocked browser | suspended promptly; race measured | **pass — 366 ms** |
-| Install unrelated app | installs and runs without PIN | **pass** (stub APKs installed freely throughout) |
-| Reinstall target after exhaustion | remains blocked, balance not reset | **pass** (idempotent re-apply; balance is day-keyed) |
-| Calls, SMS, maps, camera, banking, ordinary Chrome | normal | **partial** — ordinary browsing verified; telephony not testable on this emulator |
-| Battery saver and overnight idle | recovers; no accidental reset; battery recorded | **not verified** |
-| Signed in-place update | owner status, PIN, usage, policies preserved | **not verified** — needs the release key |
-| PIN-authorized maintenance / recovery | restores access without corrupting state | **partial** — restore path unit/instrumented; ownership relinquish not exercised |
+An external review of commit `cdbd789` reproduced five defects against the compiled classes
+and identified three more by reading the source. All eight are fixed. Each has a regression
+test that fails against the old behaviour.
+
+| # | Finding | Fix | Covered by |
+|---|---|---|---|
+| F1 | A blind pass produced `UNCERTAIN`, but the next successful poll re-anchored as `CLEAN`, so losing Usage Access briefly discarded the interval **and** reopened the apps. | Recovery is a latched `RecoveryRequest` on the checkpoint, carrying its reason and time range, cleared only by the PIN-authorized acknowledgement. A single failed query inside a poll interval is a transient read, not a hole. | engine: `a lost interval stays lost until it is acknowledged`; coordinator: `losingTheUsageSourceLeavesRecoveryOutstandingAcrossManyHealthyPolls`, `anOutstandingRecoveryRequestSurvivesACoordinatorRestart`, `acknowledgingRecoveryResumesAccessAccordingToTheRetainedBalance` |
+| F2 | A restarted process built an **empty** observer while the checkpoint said a target was on screen; the inherited interval was charged once and visibility then recorded as false, so the rest of that session was free. | The observer's state is serialized and written in the same transaction as the checkpoint, and restored before any accounting runs. If it cannot be reconstructed while the checkpoint claimed visibility, recovery is latched instead of a guess being made. | engine: `an app left open across a restart keeps being metered` and three others; coordinator: `anAppLeftOpenAcrossAProcessRestartKeepsBeingCharged`, `leavingTheAppAfterARestartStopsTheChargeAtTheRightMoment` |
+| F3 | A large forward wall-clock jump only produced a diagnostic; the day was then selected from the new time, so an exhausted user could reach an unvisited date with a full allowance. PIN cooldowns had the same weakness in the other direction. | Accounting runs on an **accepted** clock that advances by monotonic duration; the system clock is adopted only while it agrees, per pass (5 s) and cumulatively (2 min). Beyond that the jump is refused and recovery is latched. PIN cooldowns now carry a monotonic deadline alongside the wall-clock one. | engine: `a wall-clock jump forward is refused...`, `repeated small corrections cannot be accumulated into a large one`, `winding the clock forwards does not end a lockout early either`; coordinator: `aForwardWallClockJumpDoesNotCreateANewSpendableDay`, `ordinaryMidnightRolloverStillGrantsExactlyOneAllowance` |
+| F4 | The admin session survived the app going to the background, so a trusted person could authenticate, hand the phone back, and the phone's user could return to an open settings screen. PIN replacement went through the same unguarded call as first-time creation. | The session is revoked on real backgrounding (a configuration change is distinguished), has a monotonic expiry checked at every protected operation, and is re-checked at commit time. Creating the first PIN and replacing one are separate operations, and replacement re-authorizes after the key is derived. | engine: `a first PIN cannot be created once one exists`, `replacing a PIN without authorization changes nothing`, `authorization that lapses while the key is derived does not save the new PIN` |
+| F5 | Late events were applied to the observer but filtered out of accounting, so an interval could be charged at 2000 ms when only 600 ms was visible. | Accounting trails now by 30 s. The unsettled tail is recomputed from durable retained events on every pass, so a correction replaces an estimate; only the settled window is written, and only once. | engine: `only the settled part of the window is charged`, `consecutive settled windows charge each interval exactly once`, `a correction inside the open window replaces an estimate...`; coordinator: `aLateArrivingPauseCorrectsTheChargeInsteadOfBeingIgnored`, `deliveringTheSameEventsLateProducesTheSameDayTotal`, `replayingTheOverlapWindowNeverChargesAnIntervalTwice` |
+| F6 | A paused-but-visible activity stopped being metered after 90 seconds, so a still-displayed target became free. | Metering continues for ten minutes; a screen-off clears a paused activity (which bounds a lost `STOPPED` to one screen-on session); past ten minutes the observer declares the state **unresolved**, which latches recovery rather than deciding either way. | engine: `a paused activity keeps being metered well past the old ninety-second cut-off`, `a paused activity that never stops becomes unresolved rather than free`, `turning the screen off clears a paused activity...` |
+| F7 | `restoreDevice` continued to clear self-protection and relinquish ownership after a failed step, and the UI announced success while ignoring two of the three results. | Restore is staged; each stage verifies; nothing downstream of a failure runs; ownership is released only when every earlier stage passed. A failure leaves a persisted maintenance state that stops the poll loop asserting policy, names the failed step, and can be retried or cancelled. | coordinator: `aFailedUnsuspendStopsTheRestoreAndKeepsOwnership`, `aFailedChromeRestoreStopsBeforeOwnershipIsReleased`, `retryingAfterTheInjectedFailureIsClearedCompletesTheRestore`, `maintenanceModeStopsThePollLoopFightingTheRestore` |
+| F8 | The ledger was written **after** the policy call and recorded `previousValue = null` for every package, so restore unsuspended a hardcoded list and could not tell "was not suspended" from "could not tell". | The ledger is write-ahead and records `ABSENT` / `VALUE` / `UNKNOWN` distinctly, for suspension, Chrome's blocklist, the user-control list, uninstall blocking, user restrictions and the automatic-time setting. Restore uses it, merges rather than overwrites list policies, and refuses to release a package whose prior state is unknown without an explicit decision. | coordinator: `theLedgerRecordsEachPackagesStateBeforeDoomStopTouchedIt`, `theLedgerRecordsChromesOriginalBlocklistNotDoomStopsOwn`, `aSuccessfulRestorePutsBackWhatWasThereBeforeAndOnlyThat`, `packagesWhosePriorStateIsUnknownAreNotReleasedWithoutAnExplicitDecision` |
+
+Also corrected from the review's delivery notes: `completeSetup()` now validates its
+prerequisites at the operation boundary and keeps the self-protection result, so a failed
+anti-removal control is an unsatisfied readiness line rather than something hidden behind a
+green "Protected"; and `ChromePolicyReport.satisfied` was renamed `storedPolicyVerified`,
+with the UI saying plainly that it describes the value DevicePolicyManager holds and not
+Chrome's acceptance of it.
+
+### 7.1 Two further defects the regression tests exposed
+
+**Rebooting was worth up to half a minute of free use.** Once accounting trailed the present
+(F5), the window still open at shutdown had never been written, and the pass after a reboot
+starts from "nothing on screen" — so it was silently discarded, repeatably and on demand.
+Fixed by settling that tail from its own retained events before the boot gap is considered
+at all. The same flush now runs before a refused clock reading and before a blind pass, for
+the same reason. Covered by `anAppOpenAtShutdownIsChargedUpToTheRebootRatherThanForgiven`
+and `acknowledgingRecoveryResumesAccessAccordingToTheRetainedBalance`.
+
+**Carrying the live observer between passes replayed the tail on top of itself.** The first
+attempt kept one observer across ticks; because the unsettled window is recomputed each
+pass, its events were applied twice and the observer's logical clock refused to rewind, so a
+late event landed on a state it had already been applied to. The observer is now rebuilt
+from the settled snapshot on every pass. This was caught by
+`aLateArrivingPauseCorrectsTheChargeInsteadOfBeingIgnored` failing with a charge of 0.
+
+### 7.2 Live re-check after the fixes (emulator, real clock)
+
+The fixes change how time is committed, so the whole path was re-run once by hand against
+the provisioned emulator with no fake clock anywhere — real `UsageStatsManager` events, real
+suspension, a one-minute allowance, and the build installed **in place over the version 1
+database** so the migration ran for real.
+
+| Moment | Notification |
+|---|---|
+| target opened | `41 s left today` · *Counting now* |
+| 20 s later | `21 s left today` · *Counting now* |
+| 25 s later | `Social apps paused for today` |
+| Home pressed | *Not counting* |
+
+Twenty seconds of use cost exactly twenty seconds, so the thirty-second commit lag does not
+show up as a lag in what the user sees. At exhaustion the platform reported
+`suspended=true` for all three targets and for the installed blocked browser, and launching
+a target resumed `com.android.settings/.enterprise.ActionDisabledByAdminDialog` rather than
+the app. The in-place update kept the existing database and the device-owner state.
+
+### 7.3 What the review asked for that is still not done
+
+- **Picture-in-picture on real hardware.** F6's rule is the conservative interim answer, not
+  a measured one. None of the three target apps is believed to offer PiP on Android, but that
+  has not been checked on the phone, and the ten-minute unresolved bound is a judgement call
+  that should be revisited with a hardware measurement of `ACTIVITY_STOPPED` latency.
+- **A signed release.** The build now refuses to produce an unsigned one, but the key itself
+  has to be created by its owner and the in-place update path is still unverified.
 
 ---
 
-## 8. Residual gaps, stated plainly
+## 8. Acceptance matrix
+
+| Test | Required result | Evidence | Status |
+|---|---|---|---|
+| Open any target without opening limiter | counting starts automatically | emulator, real `UsageStatsManager` events | **pass** — 21 s charged for ~20 s |
+| Instagram 20 s + Reddit 20 s + TikTok 20 s | shared allowance exhausted, all three suspended | emulator, real suspension read back | **pass** |
+| Home / unrelated app / locked screen | no ongoing debit | emulator + coordinator | **pass** |
+| Rapid switching and activity transitions | no duplicated or lost intervals | engine + coordinator | **pass** |
+| Split-screen | visible target charged once | engine (multi-resume) + emulator | **pass** |
+| Picture-in-picture | still-visible target keeps being charged | engine only | **partial** — metering no longer stops at 90 s and ends in an explicit unresolved state; **not exercised on hardware**, and whether the three apps offer PiP at all is unchecked |
+| Expiry while app open | unusable; cut-off ≤ 2 s | emulator | **pass — 683 ms** |
+| Notifications / recents / deep links after expiry | no access | emulator (launch only) | **partial** — launch blocked; specific routes not walked |
+| Correct PIN | exactly one extension, sites still blocked | emulator + UI flow | **pass** |
+| Wrong PIN, repeated, reboot | no grant, persistent throttling | engine | **pass** — rewind *and* forward jump covered |
+| Admin session ends when the app is backgrounded | PIN needed again | source only | **not verified** — no UI-lifecycle test; the logic is unit-covered only where it is testable off-device |
+| Midnight while app open | interval split, exactly one reset | engine + coordinator | **pass** |
+| Manual date change forward | no new spendable day | coordinator + emulator | **pass** — jump refused, day unchanged, no new day row created |
+| Manual date change backward | no repeatable reset exploit | coordinator + emulator | **pass** — refused; the day stays exhausted |
+| Timezone change on the device | accounting day unaffected | source only | **not verified** — the accounting zone is captured at setup and never follows the device, but this has not been exercised |
+| Reboot with exhausted/remaining allowance | balance retained, no fresh grant | emulator + coordinator | **pass** — including the window still open at shutdown |
+| Process death while target open | reconcile and resume | coordinator (real database, rebuilt coordinator) | **pass** — this is now a restart test, not only an engine test |
+| Usage permission revoked | unhealthy state, suspension, recovery latched | coordinator | **pass** — and the latch survives a restart |
+| Force-stop / clear-data / uninstall controller | settings bypass prevented | emulator (uninstall) | **partial** — uninstall refused and user-control disabled for this package only; force-stop and clear-data not exercised by hand |
+| Chrome normal / incognito / mobile / old / short URLs | blocked permanently | emulator, real Chrome | **pass** |
+| Chrome policy after reboot / update / reinstall | remains effective or reapplied | — | **not verified** |
+| Target tab open before initial policy | setup closes/restarts; no retroactive claim | — | **not verified**; documented in setup |
+| Install known blocked browser | suspended promptly; race measured | emulator | **pass — 366 ms** |
+| Install unrelated app | installs and runs without PIN | emulator | **pass** |
+| Reinstall target after exhaustion | remains blocked, balance not reset | emulator | **pass** |
+| Calls, SMS, maps, camera, banking, ordinary Chrome | normal | emulator (browsing only) | **partial** — telephony not testable on this emulator |
+| Battery saver and overnight idle | recovers; no accidental reset; battery recorded | — | **not verified** |
+| Signed in-place update | owner status, PIN, usage, policies preserved | — | **not verified** — needs the release key |
+| Database upgrade | balance and outstanding recovery survive | coordinator (`MigrationTest`) | **pass** — an `UNCERTAIN` history stays `UNCERTAIN` across the upgrade |
+| PIN-authorized restore, every step succeeding | previous values restored, only what this app changed | coordinator, injected policy | **pass** |
+| PIN-authorized restore, a step failing | ownership kept, failure named, retry works | coordinator, injected policy | **pass** |
+| Releasing device ownership | app becomes removable | coordinator, injected policy | **partial** — the staged path and its refusal-to-proceed are tested; the real `clearDeviceOwnerApp` has not been run |
+
+---
+
+## 9. Residual gaps, stated plainly
 
 1. **The phone is not protected.** Everything above is emulator work. Until the Pixel is
    reset and provisioned, DoomStop enforces nothing on it.
@@ -282,5 +389,17 @@ between `LOCKED_BOOT_COMPLETED` and first unlock; battery impact of the one-seco
    by itself.
 8. **Anyone with recovery or firmware access can wipe the device**, and that is the intended
    escape hatch if the PIN is lost.
-9. **The release APK is unsigned.** The signing key has to be created by its owner; the
-   password must not pass through a build log or a transcript.
+9. **There is no signed release yet.** The build refuses to produce an unsigned one, but the
+   key has to be created by its owner; the password must not pass through a build log or a
+   transcript, and the in-place update path stays unverified until it exists.
+10. **Picture-in-picture is unmeasured.** Section 7.3 states the interim rule and why it is
+    conservative rather than correct.
+11. **Accounting commits on a thirty-second lag.** Enforcement uses the live estimate, so
+    cut-off is unaffected, but a usage event delivered more than thirty seconds late is
+    dropped with a diagnostic rather than applied to an interval that has already been
+    charged. Nothing observed so far arrives that late; the reader's own overlap is ten
+    seconds.
+12. **A clock correction larger than five seconds needs the PIN holder.** That is the price
+    of refusing a clock jump outright. With automatic time on it should not happen; when it
+    does, the acknowledgement screen names the reason and the range, and adopting the new
+    clock is an authorized act because the anchor decides which day is current.
