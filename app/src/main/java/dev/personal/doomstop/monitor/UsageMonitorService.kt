@@ -63,6 +63,7 @@ class UsageMonitorService : Service() {
 
                 else -> Trigger.POLL
             }
+            Log.i(TAG, "wake: ${intent.action} -> $trigger")
             scope.launch { runCatching { coordinator.tick(trigger) } }
         }
     }

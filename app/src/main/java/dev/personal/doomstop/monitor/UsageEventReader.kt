@@ -18,6 +18,18 @@ data class UsageReadResult(
 )
 
 /**
+ * The seam between the coordinator and the platform's usage-event stream.
+ *
+ * It exists so that an integration test can drive a REAL device-owner device -- real
+ * suspension, real Chrome policy -- while feeding scripted visibility events against a
+ * fake clock, instead of waiting out a sixty-second allowance in real time.
+ */
+interface UsageSource {
+    fun hasUsageAccess(): Boolean
+    fun read(sinceWallMs: Long, nowWallMs: Long): UsageReadResult
+}
+
+/**
  * Reads activity lifecycle and screen events from [UsageStatsManager].
  *
  * Uses queryEvents (individual lifecycle events), never daily aggregate usage totals:
@@ -28,7 +40,7 @@ data class UsageReadResult(
  * are removed by a stable event key, and the tracker is idempotent anyway, so an event
  * seen twice cannot be charged twice.
  */
-class UsageEventReader(private val context: Context) {
+class UsageEventReader(private val context: Context) : UsageSource {
 
     private val usageStatsManager: UsageStatsManager? =
         context.getSystemService(UsageStatsManager::class.java)
@@ -36,7 +48,7 @@ class UsageEventReader(private val context: Context) {
     /** Recently seen event keys, oldest first, for cross-window de-duplication. */
     private val seen = LinkedHashSet<String>()
 
-    fun hasUsageAccess(): Boolean = AppPermissions.hasUsageAccess(context)
+    override fun hasUsageAccess(): Boolean = AppPermissions.hasUsageAccess(context)
 
     /**
      * Read every relevant event in `(sinceWallMs - overlap, nowWallMs]`.
@@ -45,7 +57,7 @@ class UsageEventReader(private val context: Context) {
      * false` means Usage Access is missing or the query failed, and the caller must not
      * mistake that for idleness.
      */
-    fun read(sinceWallMs: Long, nowWallMs: Long): UsageReadResult {
+    override fun read(sinceWallMs: Long, nowWallMs: Long): UsageReadResult {
         if (!hasUsageAccess()) {
             return UsageReadResult(emptyList(), available = false, newCursorWallMs = sinceWallMs, error = "usage access not granted")
         }

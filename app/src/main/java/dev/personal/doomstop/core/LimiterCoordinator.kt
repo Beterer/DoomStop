@@ -28,7 +28,7 @@ import dev.personal.doomstop.domain.MonitorHealth
 import dev.personal.doomstop.domain.TickInput
 import dev.personal.doomstop.domain.VisibilityTransition
 import dev.personal.doomstop.monitor.AppPermissions
-import dev.personal.doomstop.monitor.UsageEventReader
+import dev.personal.doomstop.monitor.UsageSource
 import dev.personal.doomstop.monitor.VisibleTargetTracker
 import dev.personal.doomstop.security.AuthorizationTicket
 import java.time.ZoneId
@@ -65,7 +65,7 @@ class LimiterCoordinator(
     private val context: Context,
     private val dao: LimiterDao,
     private val policy: PolicyController,
-    private val reader: UsageEventReader,
+    private val reader: UsageSource,
     private val bootMarker: BootMarkerStore,
     private val clock: ClockSource,
     private val deadlines: DeadlineScheduler,
@@ -160,8 +160,14 @@ class LimiterCoordinator(
         }
 
         if (settingsEntity.setupCompleted) {
-            syncEnforcement(decision.suspendTargets, nowElapsedMs, nowWallMs)
-            syncChromePolicy(nowElapsedMs, nowWallMs)
+            // A package change must re-apply policy immediately rather than wait for the
+            // periodic resync: for a freshly installed browser the whole point is how
+            // narrow that window is. Measured at 4.6 s when this was left to the timer.
+            val force = trigger == Trigger.PACKAGE_CHANGE ||
+                trigger == Trigger.BOOT ||
+                trigger == Trigger.ADMIN_ACTION
+            syncEnforcement(decision.suspendTargets, nowElapsedMs, nowWallMs, force)
+            syncChromePolicy(nowElapsedMs, nowWallMs, force)
         }
 
         bootMarker.record(
@@ -187,10 +193,15 @@ class LimiterCoordinator(
      * a target must immediately pick up its current suspension state rather than waiting for
      * the allowance to change.
      */
-    private suspend fun syncEnforcement(suspendTargets: Boolean, nowElapsedMs: Long, nowWallMs: Long) {
+    private suspend fun syncEnforcement(
+        suspendTargets: Boolean,
+        nowElapsedMs: Long,
+        nowWallMs: Long,
+        force: Boolean,
+    ) {
         val changed = lastAppliedSuspendTargets != suspendTargets
         val due = nowElapsedMs - lastEnforcementSyncElapsedMs >= ENFORCEMENT_RESYNC_MS
-        if (!changed && !due) return
+        if (!force && !changed && !due) return
 
         val report = policy.applyEnforcement(suspendTargets)
         lastAppliedSuspendTargets = suspendTargets
@@ -208,10 +219,10 @@ class LimiterCoordinator(
     }
 
     /** Chrome's blocklist is permanent, so this only ever re-asserts it; it never clears it. */
-    private suspend fun syncChromePolicy(nowElapsedMs: Long, nowWallMs: Long) {
+    private suspend fun syncChromePolicy(nowElapsedMs: Long, nowWallMs: Long, force: Boolean) {
         val satisfied = lastChromeReport?.satisfied == true
         val due = nowElapsedMs - lastChromeSyncElapsedMs >= CHROME_RESYNC_MS
-        if (satisfied && !due) return
+        if (!force && satisfied && !due) return
 
         val report = policy.applyChromeBlocklist()
         lastChromeSyncElapsedMs = nowElapsedMs

@@ -37,6 +37,9 @@ android {
         versionName = "0.1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        // Fixtures deliberately leave policy applied so a person can look at the result.
+        // They must never run as part of the ordinary suite; invoke them by class#method.
+        testInstrumentationRunnerArguments["notAnnotation"] = "dev.personal.doomstop.admin.ManualFixture"
     }
 
     signingConfigs {
