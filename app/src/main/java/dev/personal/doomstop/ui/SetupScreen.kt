@@ -93,17 +93,32 @@ fun SetupScreen(
         DeviceOwnerCard(status)
         ChromePolicyCard(status)
         SuspensionCard(status)
+        SelfProtectionCard(status)
         MonitorCard(status)
 
         if (!status.setupCompleted) {
-            Button(onClick = onFinishSetup, modifier = Modifier.fillMaxWidth()) {
+            val blocking = status.unmetPrerequisites
+            Button(
+                onClick = onFinishSetup,
+                enabled = blocking.isEmpty(),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
                 Text("Finish setup and start enforcing")
             }
             Text(
-                "Enforcement stays off until this is pressed. Metering already runs, so the " +
-                    "first enforced day starts from a monitor that is known to work.",
+                if (blocking.isEmpty()) {
+                    "Enforcement stays off until this is pressed. Metering already runs, so the " +
+                        "first enforced day starts from a monitor that is known to work."
+                } else {
+                    "Still missing: " + blocking.joinToString { it.label } +
+                        ". These are checked again when the button is pressed, not just here."
+                },
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                color = if (blocking.isEmpty()) {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                } else {
+                    MaterialTheme.colorScheme.error
+                },
             )
         }
 
@@ -134,7 +149,7 @@ private fun ChromePolicyCard(status: LimiterStatus) {
     val chrome = status.chrome
     SectionCard("Chrome site policy") {
         StatRow("Chrome installed", if (chrome?.chromeInstalled == true) "yes" else "no")
-        StatRow("Blocklist verified", if (chrome?.satisfied == true) "yes" else "no")
+        StatRow("Managed value stored and read back", if (chrome?.storedPolicyVerified == true) "yes" else "no")
         if (chrome?.error != null) {
             Text(chrome.error, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
         }
@@ -144,8 +159,10 @@ private fun ChromePolicyCard(status: LimiterStatus) {
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Text(
-            "Verify independently at chrome://policy. A tab opened before the policy was applied " +
-                "may need Chrome restarted; the policy does not erase a page that is already open.",
+            "This line checks the value DevicePolicyManager holds. It is NOT evidence that Chrome " +
+                "accepted it: verify independently at chrome://policy and by opening a blocked host. " +
+                "A tab opened before the policy was applied may need Chrome restarted; the policy " +
+                "does not erase a page that is already open.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -183,6 +200,37 @@ private fun SuspensionCard(status: LimiterStatus) {
     }
 }
 
+/**
+ * The controls that stop DoomStop itself from simply being removed. Reported separately
+ * because a green "Protected" that hides a failed anti-removal control would be a lie.
+ */
+@Composable
+private fun SelfProtectionCard(status: LimiterStatus) {
+    val report = status.selfProtection
+    SectionCard("This app's own protection") {
+        StatRow("Uninstall blocked", if (report?.uninstallBlocked == true) "yes" else "no")
+        StatRow("Force-stop and clear-data blocked", if (report?.userControlDisabled == true) "yes" else "no")
+        if (report?.error != null) {
+            Text(report.error, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+        }
+        if (status.activeRestrictions.isNotEmpty()) {
+            Text(
+                "Extra restrictions in force: " + status.activeRestrictions.joinToString(", "),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Text(
+            "Applied when enforcement starts, and read back from the platform rather than " +
+                "assumed. Manual date and time changes within one boot cannot move the accounting " +
+                "day on their own; blocking them under Settings closes the same trick across a " +
+                "reboot as well.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
 @Composable
 private fun MonitorCard(status: LimiterStatus) {
     val tracker = status.tracker
@@ -194,6 +242,14 @@ private fun MonitorCard(status: LimiterStatus) {
         StatRow("Target visible", if (status.targetVisible) "yes" else "no")
         StatRow("Last check", formatWallDateTime(status.lastTickWallMs))
         StatRow("History", status.checkpointState.name.lowercase())
+        status.recovery?.let {
+            Text(
+                "Outstanding: ${it.reason} (${formatDuration(it.gapMs)} from " +
+                    "${formatWallDateTime(it.fromWallMs)})",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+            )
+        }
         tracker?.activities?.take(6)?.forEach {
             MonospaceText("${it.packageName} ${it.state} ${it.ageMs} ms")
         }

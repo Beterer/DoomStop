@@ -43,7 +43,7 @@ class PolicyControllerTest {
     @After
     fun tearDown() {
         // Leave the device usable regardless of how a test ended.
-        if (policy.isDeviceOwner) policy.releaseAll()
+        if (policy.isDeviceOwner) policy.release(policy.manageablePackages())
     }
 
     // -- Gate B -------------------------------------------------------------------------
@@ -120,7 +120,7 @@ class PolicyControllerTest {
         assertNotNull("nothing was read back", report.verifiedValue)
         assertTrue(
             "read-back did not contain every required host: ${report.verifiedValue}",
-            report.satisfied,
+            report.storedPolicyVerified,
         )
         for (host in BlockedSites.HOSTS) {
             assertTrue("missing $host", report.verifiedValue!!.contains(host))
@@ -154,8 +154,8 @@ class PolicyControllerTest {
     fun restoringTheBlocklistRemovesOnlyThatKey() {
         assumeTrue(policy.isInstalled(BlockedSites.CHROME_PACKAGE))
         policy.applyChromeBlocklist()
-        assertTrue(policy.restoreChromeBlocklist(previousValue = null))
-        assertEquals(null, policy.readChromeBlocklist())
+        assertTrue(policy.restoreChromeBlocklist(previousValue = null).isSuccess)
+        assertEquals(null, policy.readChromeBlocklist().getOrThrow())
     }
 
     // -- self protection ------------------------------------------------------------------

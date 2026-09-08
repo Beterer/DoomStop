@@ -25,13 +25,17 @@ data class TrackedEvent(
     val packageName: String,
     val className: String?,
     val type: TrackedEventType,
-)
+) {
+    /** Stable identity for de-duplication across overlapping query windows and restarts. */
+    val key: String get() = "$timestampWallMs|$packageName|${className.orEmpty()}|${type.name}"
+}
 
 /** Everything the diagnostics screen needs in order to explain the current decision. */
 data class TrackerSnapshot(
     val visible: Boolean,
     val screenInteractive: Boolean,
     val keyguardShown: Boolean,
+    val unresolved: Boolean,
     val activities: List<ActivitySnapshot>,
 ) {
     data class ActivitySnapshot(
@@ -58,11 +62,20 @@ data class TrackerSnapshot(
  *  - RESUMED counts. On Android 10+ split-screen uses multi-resume, so both visible apps
  *    are resumed and split-screen is covered directly.
  *  - PAUSED-but-not-STOPPED also counts, because that is the state a picture-in-picture
- *    activity sits in while it is plainly still on screen...
- *  - ...but only for [pausedGraceMs]. Leaving an app produces PAUSED then STOPPED a
- *    moment later, so the ordinary cost of counting PAUSED is one STOPPED-delivery
- *    latency, which is charged rather than lost. The grace bounds the pathological case
- *    where STOPPED never arrives (killed process) instead of charging indefinitely.
+ *    activity sits in while it is plainly still on screen. Leaving an app produces PAUSED
+ *    then STOPPED a moment later, so the ordinary cost of counting PAUSED is one
+ *    STOPPED-delivery latency, which is charged rather than lost.
+ *  - Turning the screen off or showing the keyguard DROPS paused activities. Nothing is on
+ *    screen at that moment, and an activity that is merely paused cannot come back without
+ *    a fresh RESUMED. This is what bounds a lost STOPPED event to a single screen-on
+ *    session instead of leaving a phantom visible forever. The documented cost is that a
+ *    genuine picture-in-picture session is no longer counted after a screen-off.
+ *  - Past [pausedVisibleMs] of unbroken PAUSED-without-STOPPED, the state is declared
+ *    UNRESOLVED rather than quietly resolved either way. The previous behaviour -- silently
+ *    deciding "not visible" after ninety seconds -- meant a still-displayed target stopped
+ *    being metered, so continued viewing was free. Refusing to decide is the only answer
+ *    that is not exploitable: the coordinator turns [hasUnresolved] into a latched recovery
+ *    state, so targets are suspended and the PIN holder resolves it.
  *  - A STOPPED is honoured only when the tracked state for that key is PAUSED. The
  *    platform guarantees onPause() runs before onStop(), so a STOPPED arriving while the
  *    key is RESUMED must belong to an OLDER instance of the same activity class -- the
@@ -76,7 +89,7 @@ data class TrackerSnapshot(
  */
 class VisibleTargetTracker(
     private val targets: Set<String>,
-    private val pausedGraceMs: Long = DEFAULT_PAUSED_GRACE_MS,
+    private val pausedVisibleMs: Long = DEFAULT_PAUSED_VISIBLE_MS,
 ) {
 
     private enum class ActivityState { RESUMED, PAUSED }
@@ -86,7 +99,7 @@ class VisibleTargetTracker(
         val className: String,
         var state: ActivityState,
         var sinceMs: Long,
-        var graceExpired: Boolean = false,
+        var unresolved: Boolean = false,
     )
 
     private val activities = LinkedHashMap<String, TrackedActivity>()
@@ -98,6 +111,17 @@ class VisibleTargetTracker(
 
     /** True when at least one target is visible and the screen is unlocked, as of the last advance. */
     val isVisible: Boolean get() = computeVisible()
+
+    /** What this observer currently believes about the screen, for comparison with the live system. */
+    val screenIsInteractive: Boolean get() = screenInteractive
+    val keyguardIsShown: Boolean get() = keyguardShown
+
+    /**
+     * True when a target activity has been PAUSED-without-STOPPED for longer than the
+     * observer is willing to interpret. Neither "visible" nor "gone" can be asserted, so
+     * the caller must escalate rather than pick one.
+     */
+    val hasUnresolved: Boolean get() = activities.values.any { it.packageName in targets && it.unresolved }
 
     /**
      * Feed events (in any order) and advance the tracker's notion of "now" to [nowWallMs].
@@ -134,6 +158,7 @@ class VisibleTargetTracker(
         advanceTo(atWallMs, out)
         screenInteractive = interactive
         keyguardShown = keyguardLocked
+        if (!interactive || keyguardLocked) dropPausedActivities()
         emitIfChanged(atWallMs, out)
         return out
     }
@@ -143,19 +168,62 @@ class VisibleTargetTracker(
         activities.clear()
         logicalNowMs = atWallMs
         lastVisible = false
+        screenInteractive = true
+        keyguardShown = false
+    }
+
+    /** Anchor logical time without asserting anything about what is on screen. */
+    fun startAt(atWallMs: Long) {
+        logicalNowMs = atWallMs
+    }
+
+    /** Serialize everything a restarted process needs in order to carry on observing. */
+    fun exportState(): TrackerState = TrackerState(
+        screenInteractive = screenInteractive,
+        keyguardShown = keyguardShown,
+        logicalNowMs = if (logicalNowMs == Long.MIN_VALUE) 0L else logicalNowMs,
+        lastVisible = lastVisible,
+        activities = activities.values.map {
+            TrackedActivityState(
+                packageName = it.packageName,
+                className = it.className,
+                resumed = it.state == ActivityState.RESUMED,
+                sinceMs = it.sinceMs,
+                unresolved = it.unresolved,
+            )
+        },
+    )
+
+    /** Reinstate a previously exported state. Replaces everything this tracker believes. */
+    fun restore(state: TrackerState) {
+        activities.clear()
+        for (activity in state.activities.take(MAX_TRACKED_ACTIVITIES)) {
+            activities[keyOf(activity.packageName, activity.className)] = TrackedActivity(
+                packageName = activity.packageName,
+                className = activity.className,
+                state = if (activity.resumed) ActivityState.RESUMED else ActivityState.PAUSED,
+                sinceMs = activity.sinceMs,
+                unresolved = activity.unresolved,
+            )
+        }
+        screenInteractive = state.screenInteractive
+        keyguardShown = state.keyguardShown
+        logicalNowMs = state.logicalNowMs
+        lastVisible = state.lastVisible
     }
 
     fun snapshot(): TrackerSnapshot = TrackerSnapshot(
         visible = computeVisible(),
         screenInteractive = screenInteractive,
         keyguardShown = keyguardShown,
+        unresolved = hasUnresolved,
         activities = activities.values.map {
             TrackerSnapshot.ActivitySnapshot(
                 packageName = it.packageName,
                 className = it.className,
                 state = when {
                     it.state == ActivityState.RESUMED -> "resumed"
-                    it.graceExpired -> "paused (grace expired)"
+                    it.unresolved -> "paused (unresolved)"
                     else -> "paused"
                 },
                 ageMs = (logicalNowMs - it.sinceMs).coerceAtLeast(0L),
@@ -165,14 +233,26 @@ class VisibleTargetTracker(
 
     // -- internals ---------------------------------------------------------------------
 
-    private fun keyOf(event: TrackedEvent): String = "${event.packageName}@${event.className.orEmpty()}"
+    private fun keyOf(event: TrackedEvent): String = keyOf(event.packageName, event.className.orEmpty())
+
+    private fun keyOf(packageName: String, className: String): String = "$packageName@$className"
 
     private fun applyEvent(event: TrackedEvent) {
         when (event.type) {
             TrackedEventType.SCREEN_INTERACTIVE -> screenInteractive = true
-            TrackedEventType.SCREEN_NON_INTERACTIVE -> screenInteractive = false
-            TrackedEventType.KEYGUARD_SHOWN -> keyguardShown = true
+
+            TrackedEventType.SCREEN_NON_INTERACTIVE -> {
+                screenInteractive = false
+                dropPausedActivities()
+            }
+
+            TrackedEventType.KEYGUARD_SHOWN -> {
+                keyguardShown = true
+                dropPausedActivities()
+            }
+
             TrackedEventType.KEYGUARD_HIDDEN -> keyguardShown = false
+
             // Nothing is on screen across a shutdown or a fresh start.
             TrackedEventType.DEVICE_SHUTDOWN, TrackedEventType.DEVICE_STARTUP -> activities.clear()
 
@@ -182,7 +262,7 @@ class VisibleTargetTracker(
                 if (existing != null) {
                     existing.state = ActivityState.RESUMED
                     existing.sinceMs = event.timestampWallMs
-                    existing.graceExpired = false
+                    existing.unresolved = false
                 } else {
                     evictIfFull()
                     activities[keyOf(event)] = TrackedActivity(
@@ -199,7 +279,7 @@ class VisibleTargetTracker(
                 if (existing.state == ActivityState.PAUSED) return // idempotent replay
                 existing.state = ActivityState.PAUSED
                 existing.sinceMs = event.timestampWallMs
-                existing.graceExpired = false
+                existing.unresolved = false
             }
 
             TrackedEventType.ACTIVITY_STOPPED -> {
@@ -214,21 +294,34 @@ class VisibleTargetTracker(
     }
 
     /**
-     * Move logical time forward, expiring paused-activity grace periods on the way, so that
-     * visibility can drop between events rather than only when one happens to arrive.
+     * Forget activities that were paused when the screen went off.
+     *
+     * Justification: with the screen off or the keyguard up, nothing a paused activity
+     * could be showing is on screen, and a paused activity cannot become visible again
+     * without emitting RESUMED, which would recreate the entry. Dropping it here is what
+     * makes a lost STOPPED event self-healing.
+     */
+    private fun dropPausedActivities() {
+        val stale = activities.filterValues { it.state == ActivityState.PAUSED }.keys.toList()
+        for (key in stale) activities.remove(key)
+    }
+
+    /**
+     * Move logical time forward, marking paused activities unresolved on the way, so that
+     * the observer's uncertainty is dated rather than discovered only when an event arrives.
      */
     private fun advanceTo(targetMs: Long, out: MutableList<VisibilityTransition>) {
         if (targetMs < logicalNowMs) return // out-of-order or duplicate; already accounted
         while (true) {
-            val next = nextGraceExpiryMs() ?: break
+            val next = nextUnresolvedAtMs() ?: break
             if (next > targetMs) break
             logicalNowMs = next
             for (activity in activities.values) {
                 if (activity.state == ActivityState.PAUSED &&
-                    !activity.graceExpired &&
-                    activity.sinceMs + pausedGraceMs <= next
+                    !activity.unresolved &&
+                    activity.sinceMs + pausedVisibleMs <= next
                 ) {
-                    activity.graceExpired = true
+                    activity.unresolved = true
                 }
             }
             emitIfChanged(next, out)
@@ -236,14 +329,14 @@ class VisibleTargetTracker(
         logicalNowMs = targetMs
     }
 
-    private fun nextGraceExpiryMs(): Long? = activities.values
-        .filter { it.state == ActivityState.PAUSED && !it.graceExpired }
-        .minOfOrNull { it.sinceMs + pausedGraceMs }
+    private fun nextUnresolvedAtMs(): Long? = activities.values
+        .filter { it.state == ActivityState.PAUSED && !it.unresolved }
+        .minOfOrNull { it.sinceMs + pausedVisibleMs }
 
     private fun computeVisible(): Boolean {
         if (!screenInteractive || keyguardShown) return false
         return activities.values.any {
-            it.packageName in targets && (it.state == ActivityState.RESUMED || !it.graceExpired)
+            it.packageName in targets && (it.state == ActivityState.RESUMED || !it.unresolved)
         }
     }
 
@@ -264,11 +357,16 @@ class VisibleTargetTracker(
 
     companion object {
         /**
-         * Default grace for a PAUSED-but-never-STOPPED activity: long enough for a short
-         * picture-in-picture session to keep counting, short enough that a lost STOPPED
-         * event cannot quietly drain the allowance. Settled by measurement on hardware.
+         * How long a PAUSED-but-never-STOPPED target activity is counted as visible before
+         * the observer refuses to interpret it any further.
+         *
+         * This used to be ninety seconds, after which visibility silently became false --
+         * which meant a picture-in-picture session, or anything else that legitimately stays
+         * paused-and-visible, stopped being metered while it was still on screen. It is now
+         * long enough to cover a realistic session and ends in an explicit unresolved state
+         * rather than in free time.
          */
-        const val DEFAULT_PAUSED_GRACE_MS = 90_000L
+        const val DEFAULT_PAUSED_VISIBLE_MS = 10L * 60L * 1000L
 
         /** Guards against unbounded growth if STOPPED events are systematically missing. */
         const val MAX_TRACKED_ACTIVITIES = 64

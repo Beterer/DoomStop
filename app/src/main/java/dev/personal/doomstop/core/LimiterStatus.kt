@@ -1,19 +1,29 @@
 package dev.personal.doomstop.core
 
 import dev.personal.doomstop.admin.ChromePolicyReport
+import dev.personal.doomstop.admin.SelfProtectionReport
 import dev.personal.doomstop.admin.SuspensionReport
 import dev.personal.doomstop.domain.CheckpointState
 import dev.personal.doomstop.domain.EnforcementDecision
 import dev.personal.doomstop.domain.EnforcementReason
 import dev.personal.doomstop.domain.LimiterSettings
 import dev.personal.doomstop.domain.MonitorHealth
+import dev.personal.doomstop.domain.RecoveryRequest
 import dev.personal.doomstop.monitor.TrackerSnapshot
 
-/** Why the app is not fully protected, in terms a person can act on. */
+/**
+ * Why the app is not fully protected, in terms a person can act on.
+ *
+ * [prerequisite] marks the lines that must already be satisfied before enforcement can be
+ * switched on at all -- they are things a person does. The remaining lines are OUTCOMES of
+ * switching it on, so they cannot be satisfied beforehand; they are still required for
+ * [LimiterStatus.protectionActive] and are reported honestly either way.
+ */
 data class ReadinessItem(
     val label: String,
     val satisfied: Boolean,
     val remedy: String?,
+    val prerequisite: Boolean = false,
 )
 
 /**
@@ -25,6 +35,7 @@ data class ReadinessItem(
  */
 data class LimiterStatus(
     val setupCompleted: Boolean,
+    val maintenanceMode: Boolean,
     val settings: LimiterSettings,
     val dayId: String,
     val remainingMs: Long,
@@ -36,11 +47,15 @@ data class LimiterStatus(
     val targetVisible: Boolean,
     val enforcement: EnforcementDecision,
     val checkpointState: CheckpointState,
+    /** The outstanding, latched demand for authorized recovery, with its reason and range. */
+    val recovery: RecoveryRequest?,
     val health: MonitorHealth,
     val installedTargets: List<String>,
     val installedBlockedBrowsers: List<String>,
     val suspension: SuspensionReport?,
     val chrome: ChromePolicyReport?,
+    val selfProtection: SelfProtectionReport?,
+    val activeRestrictions: Set<String>,
     val tracker: TrackerSnapshot?,
     val pinSet: Boolean,
     val exactAlarmsAllowed: Boolean,
@@ -53,49 +68,86 @@ data class LimiterStatus(
      */
     val protectionActive: Boolean
         get() = setupCompleted &&
+            !maintenanceMode &&
             health.deviceOwner &&
             health.usageAccessGranted &&
             health.serviceRunning &&
             pinSet &&
-            chrome?.satisfied == true &&
+            chrome?.storedPolicyVerified == true &&
             suspension?.allApplied == true &&
+            selfProtection?.uninstallBlocked == true &&
             checkpointState == CheckpointState.CLEAN
 
     val readiness: List<ReadinessItem>
         get() = listOf(
             ReadinessItem(
-                "Device owner",
-                health.deviceOwner,
-                "Provisioning requires a factory-reset device with no accounts; see docs/setup-and-recovery.md",
+                label = "Device owner",
+                satisfied = health.deviceOwner,
+                remedy = "Provisioning requires a factory-reset device with no accounts; see docs/setup-and-recovery.md",
+                prerequisite = true,
             ),
             ReadinessItem(
-                "Usage access",
-                health.usageAccessGranted,
-                "Grant it in Settings > Apps > Special app access > Usage access",
-            ),
-            ReadinessItem("Monitor running", health.serviceRunning, "Open DoomStop to restart the monitor"),
-            ReadinessItem("Notification shown", health.notificationsEnabled, "Allow notifications for DoomStop"),
-            ReadinessItem("PIN set", pinSet, "The trusted person sets a six-digit PIN during setup"),
-            ReadinessItem(
-                "Chrome site policy verified",
-                chrome?.satisfied == true,
-                chrome?.error ?: "Restart Chrome, then re-check; verify at chrome://policy",
+                label = "Usage access",
+                satisfied = health.usageAccessGranted,
+                remedy = "Grant it in Settings > Apps > Special app access > Usage access",
+                prerequisite = true,
             ),
             ReadinessItem(
-                "Target suspension applied",
-                suspension?.allApplied == true,
-                suspension?.failures?.joinToString { it.packageName } ?: "Re-run the suspension test",
+                label = "Monitor running",
+                satisfied = health.serviceRunning,
+                remedy = "Open DoomStop to restart the monitor",
+                prerequisite = true,
             ),
             ReadinessItem(
-                "Accounting history complete",
-                checkpointState == CheckpointState.CLEAN,
-                "A gap could not be reconstructed; resolve it from the admin screen",
+                label = "Notification shown",
+                satisfied = health.notificationsEnabled,
+                remedy = "Allow notifications for DoomStop",
+            ),
+            ReadinessItem(
+                label = "PIN set",
+                satisfied = pinSet,
+                remedy = "The trusted person sets a six-digit PIN during setup",
+                prerequisite = true,
+            ),
+            ReadinessItem(
+                label = "Accounting history complete",
+                satisfied = checkpointState == CheckpointState.CLEAN,
+                remedy = recovery?.reason ?: "A gap could not be reconstructed; resolve it from the admin screen",
+                prerequisite = true,
+            ),
+            ReadinessItem(
+                label = "Chrome policy stored and read back",
+                satisfied = chrome?.storedPolicyVerified == true,
+                remedy = chrome?.error
+                    ?: "The managed value is what is checked here; confirm Chrome honours it at chrome://policy",
+            ),
+            ReadinessItem(
+                label = "Target suspension applied",
+                satisfied = suspension?.allApplied == true,
+                remedy = suspension?.failures?.joinToString { it.packageName }
+                    ?: "Applied when enforcement starts; finish setup to apply it",
+            ),
+            ReadinessItem(
+                label = "This app cannot be uninstalled",
+                satisfied = selfProtection?.uninstallBlocked == true,
+                remedy = selfProtection?.error
+                    ?: "Applied when enforcement starts; without it the limiter can simply be removed",
+            ),
+            ReadinessItem(
+                label = "Task-manager controls disabled for this app",
+                satisfied = selfProtection?.userControlDisabled == true,
+                remedy = "Not supported on every platform build; force-stop may remain available",
             ),
         )
+
+    /** Lines that must be green before enforcement can be switched on. */
+    val unmetPrerequisites: List<ReadinessItem>
+        get() = readiness.filter { it.prerequisite && !it.satisfied }
 
     companion object {
         fun initial(settings: LimiterSettings) = LimiterStatus(
             setupCompleted = false,
+            maintenanceMode = false,
             settings = settings,
             dayId = "",
             remainingMs = 0,
@@ -107,6 +159,7 @@ data class LimiterStatus(
             targetVisible = false,
             enforcement = EnforcementDecision(false, EnforcementReason.ALLOWANCE_AVAILABLE),
             checkpointState = CheckpointState.CLEAN,
+            recovery = null,
             health = MonitorHealth(
                 deviceOwner = false,
                 usageAccessGranted = false,
@@ -117,6 +170,8 @@ data class LimiterStatus(
             installedBlockedBrowsers = emptyList(),
             suspension = null,
             chrome = null,
+            selfProtection = null,
+            activeRestrictions = emptySet(),
             tracker = null,
             pinSet = false,
             exactAlarmsAllowed = false,

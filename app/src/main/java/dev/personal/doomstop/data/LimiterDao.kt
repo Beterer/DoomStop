@@ -60,6 +60,20 @@ abstract class LimiterDao {
     @Upsert
     abstract suspend fun upsertCheckpoint(checkpoint: CheckpointEntity)
 
+    // -- pending (not yet settled) usage events -----------------------------------------
+
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    abstract suspend fun insertPendingEvents(events: List<PendingEventEntity>)
+
+    @Query("SELECT * FROM pending_event ORDER BY timestampWallMs ASC")
+    abstract suspend fun pendingEvents(): List<PendingEventEntity>
+
+    @Query("DELETE FROM pending_event WHERE timestampWallMs <= :settledWallMs")
+    abstract suspend fun prunePendingEventsThrough(settledWallMs: Long)
+
+    @Query("DELETE FROM pending_event")
+    abstract suspend fun clearPendingEvents()
+
     // -- PIN ---------------------------------------------------------------------------
 
     @Query("SELECT * FROM pin_verifier WHERE id = 1")
@@ -115,7 +129,14 @@ abstract class LimiterDao {
 
     /**
      * Persist an accounting pass atomically: create any missing day rows with the base
-     * allowance in force, add each slice's charge, and store the new checkpoint.
+     * allowance in force, add each slice's charge, retain the events that belong to the
+     * window still open for correction, drop the ones the new checkpoint has just made
+     * permanent, and store that checkpoint.
+     *
+     * All five happen in one transaction because they are one fact. The observer state and
+     * the retained events are exactly what the next process needs in order to recompute the
+     * unsettled tail identically; committing the checkpoint without them would recreate the
+     * bug where a restart forgot that an app was open.
      *
      * Accounting is persisted BEFORE the caller decides whether to keep targets available,
      * so a crash between the two can only ever err toward having charged time.
@@ -125,6 +146,8 @@ abstract class LimiterDao {
         slices: List<DaySlice>,
         baseAllowanceMs: Long,
         checkpoint: CheckpointEntity,
+        retainedEvents: List<PendingEventEntity>,
+        settledThroughWallMs: Long,
     ) {
         for (slice in slices) {
             if (slice.durationMs <= 0) continue
@@ -138,6 +161,8 @@ abstract class LimiterDao {
             )
             addCharge(slice.dayId, slice.durationMs)
         }
+        if (retainedEvents.isNotEmpty()) insertPendingEvents(retainedEvents)
+        prunePendingEventsThrough(settledThroughWallMs)
         upsertCheckpoint(checkpoint)
     }
 

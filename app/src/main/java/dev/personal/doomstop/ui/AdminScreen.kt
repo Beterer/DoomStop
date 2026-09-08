@@ -29,6 +29,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.text.KeyboardOptions
 import dev.personal.doomstop.admin.HardeningOptions
 import dev.personal.doomstop.core.LimiterStatus
+import dev.personal.doomstop.core.RestoreReport
 import dev.personal.doomstop.domain.CheckpointState
 import java.time.ZoneId
 
@@ -42,13 +43,15 @@ import java.time.ZoneId
 fun AdminScreen(
     status: LimiterStatus,
     busy: Boolean,
+    restoreReport: RestoreReport?,
     onInteraction: () -> Unit,
     previewAllowance: suspend (Long) -> Pair<Long, Long>,
     onSave: (dailyMs: Long, extensionMs: Long, zoneId: String) -> Unit,
     onChangePin: () -> Unit,
     onApplyHardening: (HardeningOptions) -> Unit,
     onAcknowledgeRecovery: () -> Unit,
-    onRestoreDevice: (relinquishOwnership: Boolean) -> Unit,
+    onRestoreDevice: (relinquishOwnership: Boolean, releaseUnknownPackages: Boolean) -> Unit,
+    onCancelMaintenance: () -> Unit,
     onBack: () -> Unit,
 ) {
     var dailyMinutes by remember(status.settings) { mutableStateOf(formatMinutes(status.settings.dailyAllowanceMs)) }
@@ -56,8 +59,11 @@ fun AdminScreen(
     var zoneId by remember(status.settings) { mutableStateOf(status.settings.zoneId) }
     var preview by remember { mutableStateOf<Pair<Long, Long>?>(null) }
 
-    var hardening by remember { mutableStateOf(HardeningOptions()) }
+    var hardening by remember(status.activeRestrictions) {
+        mutableStateOf(HardeningOptions.fromRestrictions(status.activeRestrictions))
+    }
     var confirmRestore by remember { mutableStateOf<Boolean?>(null) }
+    var releaseUnknown by remember { mutableStateOf(false) }
 
     // Show the effect of an allowance change BEFORE it is applied.
     LaunchedEffect(dailyMinutes) {
@@ -74,8 +80,9 @@ fun AdminScreen(
     ) {
         Text("Settings", style = MaterialTheme.typography.headlineSmall)
         Text(
-            "Signed in with the PIN. This ends when you leave the screen or after two minutes " +
-                "of inactivity — there is no permanent unlock.",
+            "Signed in with the PIN. This ends when you leave this screen, when DoomStop leaves the " +
+                "foreground, or after two minutes of inactivity — there is no permanent unlock, and " +
+                "every action below re-checks the session before it runs.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -147,13 +154,44 @@ fun AdminScreen(
             }
         }
 
+        if (status.maintenanceMode) {
+            SectionCard("Maintenance in progress") {
+                Text(
+                    "DoomStop is deliberately not enforcing anything right now, so a restore is " +
+                        "not fought by the monitor. The phone is unprotected until this ends.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.error,
+                )
+                restoreReport?.failures?.forEach {
+                    Text(
+                        "Failed: ${it.name}${it.detail?.let { d -> " — $d" }.orEmpty()}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+                Button(onClick = onCancelMaintenance, enabled = !busy, modifier = Modifier.fillMaxWidth()) {
+                    Text("Cancel maintenance and resume enforcing")
+                }
+            }
+        }
+
         if (status.checkpointState == CheckpointState.UNCERTAIN) {
             SectionCard("Recovery needed") {
                 Text(
-                    "A period could not be reconstructed, so the apps are paused. Acknowledging " +
-                        "this re-anchors the accounting from now. Time already charged today is " +
-                        "kept; no missing time is invented and no fresh allowance is granted.",
+                    status.recovery?.let {
+                        "The apps are paused because ${it.reason}. The affected period is " +
+                            "${formatDuration(it.gapMs)} from ${formatWallDateTime(it.fromWallMs)} to " +
+                            "${formatWallDateTime(it.toWallMs)}."
+                    } ?: "A period could not be reconstructed, so the apps are paused.",
                     style = MaterialTheme.typography.bodyMedium,
+                )
+                Text(
+                    "Acknowledging this re-anchors the accounting from now, and adopts the phone's " +
+                        "current clock. Time already charged today is kept; no missing time is " +
+                        "invented. If the clock is wrong, correct it BEFORE acknowledging — the " +
+                        "anchor decides which accounting day is current.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Button(onClick = onAcknowledgeRecovery, enabled = !busy, modifier = Modifier.fillMaxWidth()) {
                     Text("Acknowledge and resume")
@@ -190,11 +228,24 @@ fun AdminScreen(
 
         SectionCard("Maintenance and removal") {
             Text(
-                "These undo what DoomStop changed. Only this app's own suspensions and its own " +
-                    "Chrome blocklist entry are restored; unrelated settings are left alone.",
+                "These undo what DoomStop changed, one verified step at a time. Only the values " +
+                    "recorded in its ledger are put back; unrelated settings are left alone. If a " +
+                    "step fails, device ownership is kept so the whole thing can be retried.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            restoreReport?.let { report ->
+                for (stage in report.stages) {
+                    CheckRow(stage.name, stage.succeeded, stage.detail)
+                }
+                if (report.ambiguousPackages.isNotEmpty()) {
+                    HardeningToggle(
+                        "Also release ${report.ambiguousPackages.size} package(s) whose state before " +
+                            "DoomStop is unknown",
+                        releaseUnknown,
+                    ) { releaseUnknown = it; onInteraction() }
+                }
+            }
             OutlinedButton(
                 onClick = { confirmRestore = false },
                 enabled = !busy,
@@ -235,7 +286,7 @@ fun AdminScreen(
                 )
             },
             confirmButton = {
-                TextButton(onClick = { confirmRestore = null; onRestoreDevice(relinquish) }) {
+                TextButton(onClick = { confirmRestore = null; onRestoreDevice(relinquish, releaseUnknown) }) {
                     Text("Confirm")
                 }
             },

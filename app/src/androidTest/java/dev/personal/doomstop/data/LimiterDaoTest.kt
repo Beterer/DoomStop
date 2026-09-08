@@ -5,11 +5,15 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import dev.personal.doomstop.domain.CheckpointState
 import dev.personal.doomstop.domain.DaySlice
+import dev.personal.doomstop.domain.RecoveryRequest
+import dev.personal.doomstop.monitor.TrackedEvent
+import dev.personal.doomstop.monitor.TrackedEventType
 import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -39,6 +43,31 @@ class LimiterDaoTest {
 
     @After
     fun tearDown() = database.close()
+
+    private fun checkpoint(
+        elapsedMs: Long = 1_000,
+        wallMs: Long = 2_000,
+        settledMs: Long = wallMs,
+        visible: Boolean = true,
+        recoveryReason: String? = null,
+        trackerState: String? = null,
+    ) = CheckpointEntity(
+        bootId = "boot:1",
+        lastElapsedMs = elapsedMs,
+        lastWallMs = wallMs,
+        settledWallMs = settledMs,
+        targetVisible = visible,
+        usageCursorWallMs = wallMs,
+        acceptedDriftMs = 0,
+        recoveryReason = recoveryReason,
+        recoveryFromWallMs = 0,
+        recoveryToWallMs = 0,
+        recoveryDetectedAtWallMs = 0,
+        trackerState = trackerState,
+    )
+
+    private fun event(t: Long, type: TrackedEventType, pkg: String = "com.instagram.android") =
+        PendingEventEntity.from(TrackedEvent(t, pkg, "$pkg.MainActivity", type))
 
     // -- grants -----------------------------------------------------------------------------
 
@@ -73,23 +102,19 @@ class LimiterDaoTest {
 
     @Test
     fun accountingCreatesMissingDaysAndAccumulatesCharges() = runTest {
-        val checkpoint = CheckpointEntity(
-            bootId = "boot:1",
-            lastElapsedMs = 1_000,
-            lastWallMs = 2_000,
-            targetVisible = true,
-            usageCursorWallMs = 2_000,
-            state = CheckpointState.CLEAN.name,
-        )
         dao.applyAccounting(
             slices = listOf(DaySlice("2026-09-08", 60_000), DaySlice("2026-09-09", 30_000)),
             baseAllowanceMs = allowanceMs,
-            checkpoint = checkpoint,
+            checkpoint = checkpoint(),
+            retainedEvents = emptyList(),
+            settledThroughWallMs = 2_000,
         )
         dao.applyAccounting(
             slices = listOf(DaySlice("2026-09-08", 15_000)),
             baseAllowanceMs = allowanceMs,
-            checkpoint = checkpoint.copy(lastElapsedMs = 2_000),
+            checkpoint = checkpoint(elapsedMs = 2_000),
+            retainedEvents = emptyList(),
+            settledThroughWallMs = 2_000,
         )
 
         assertEquals(75_000L, dao.day("2026-09-08")?.chargedMs)
@@ -102,16 +127,56 @@ class LimiterDaoTest {
         dao.applyAccounting(
             slices = listOf(DaySlice("2026-09-08", 0)),
             baseAllowanceMs = allowanceMs,
-            checkpoint = CheckpointEntity(
-                bootId = "boot:1",
-                lastElapsedMs = 0,
-                lastWallMs = 0,
-                targetVisible = false,
-                usageCursorWallMs = 0,
-                state = CheckpointState.CLEAN.name,
-            ),
+            checkpoint = checkpoint(elapsedMs = 0, wallMs = 0, visible = false),
+            retainedEvents = emptyList(),
+            settledThroughWallMs = 0,
         )
         assertEquals(null, dao.day("2026-09-08"))
+    }
+
+    // -- the window that is still open for correction --------------------------------------
+
+    @Test
+    fun eventsAreRetainedUntilTheirIntervalIsSettledAndThenDropped() = runTest {
+        dao.applyAccounting(
+            slices = emptyList(),
+            baseAllowanceMs = allowanceMs,
+            checkpoint = checkpoint(wallMs = 10_000, settledMs = 5_000),
+            retainedEvents = listOf(
+                event(4_000, TrackedEventType.ACTIVITY_RESUMED),
+                event(6_000, TrackedEventType.ACTIVITY_PAUSED),
+                event(8_000, TrackedEventType.ACTIVITY_STOPPED),
+            ),
+            settledThroughWallMs = 5_000,
+        )
+        // The one at 4 s belongs to an interval that has just been charged; it goes.
+        assertEquals(listOf(6_000L, 8_000L), dao.pendingEvents().map { it.timestampWallMs })
+
+        dao.applyAccounting(
+            slices = emptyList(),
+            baseAllowanceMs = allowanceMs,
+            checkpoint = checkpoint(wallMs = 12_000, settledMs = 7_000),
+            retainedEvents = emptyList(),
+            settledThroughWallMs = 7_000,
+        )
+        assertEquals(listOf(8_000L), dao.pendingEvents().map { it.timestampWallMs })
+    }
+
+    @Test
+    fun anEventDeliveredTwiceIsStoredOnce() = runTest {
+        val duplicate = event(6_000, TrackedEventType.ACTIVITY_RESUMED)
+        dao.insertPendingEvents(listOf(duplicate))
+        dao.insertPendingEvents(listOf(duplicate, duplicate))
+        assertEquals(1, dao.pendingEvents().size)
+    }
+
+    @Test
+    fun aPendingEventRoundTripsBackIntoTheObserversInput() = runTest {
+        dao.insertPendingEvents(listOf(event(6_000, TrackedEventType.ACTIVITY_PAUSED)))
+        val restored = dao.pendingEvents().single().toTrackedEvent()
+        assertNotNull(restored)
+        assertEquals(TrackedEventType.ACTIVITY_PAUSED, restored!!.type)
+        assertEquals(6_000L, restored.timestampWallMs)
     }
 
     // -- rollover ------------------------------------------------------------------------------
@@ -149,50 +214,65 @@ class LimiterDaoTest {
     // -- recovery ------------------------------------------------------------------------------
 
     @Test
-    fun checkpointStateSurvivesAndRoundTrips() = runTest {
-        val uncertain = CheckpointEntity(
-            bootId = "boot:9",
-            lastElapsedMs = 500,
-            lastWallMs = 1_500,
-            targetVisible = true,
-            usageCursorWallMs = 1_400,
-            state = CheckpointState.UNCERTAIN.name,
+    fun anOutstandingRecoveryRequestSurvivesWithItsReasonAndRange() = runTest {
+        dao.upsertCheckpoint(
+            CheckpointEntity.from(
+                checkpoint().toCheckpoint().copy(
+                    recovery = RecoveryRequest(
+                        reason = "usage events were unreadable",
+                        fromWallMs = 1_000,
+                        toWallMs = 61_000,
+                        detectedAtWallMs = 61_000,
+                    )
+                )
+            )
         )
-        dao.upsertCheckpoint(uncertain)
-        assertEquals(CheckpointState.UNCERTAIN, dao.checkpoint()?.toCheckpoint()?.state)
+        val restored = dao.checkpoint()?.toCheckpoint()
+        assertEquals(CheckpointState.UNCERTAIN, restored?.state)
+        assertEquals("usage events were unreadable", restored?.recovery?.reason)
+        assertEquals(60_000L, restored?.recovery?.gapMs)
     }
 
     @Test
-    fun anUnreadableCheckpointStateFailsSafeToUncertain() = runTest {
-        dao.upsertCheckpoint(
-            CheckpointEntity(
-                bootId = "boot:9",
-                lastElapsedMs = 0,
-                lastWallMs = 0,
-                targetVisible = false,
-                usageCursorWallMs = 0,
-                state = "GARBAGE_FROM_A_FUTURE_VERSION",
-            )
-        )
-        // Failing closed matters: an unreadable history must suspend, not resume.
-        assertEquals(CheckpointState.UNCERTAIN, dao.checkpoint()?.toCheckpoint()?.state)
+    fun aCheckpointWithNoRequestIsClean() = runTest {
+        dao.upsertCheckpoint(checkpoint())
+        val restored = dao.checkpoint()?.toCheckpoint()
+        assertEquals(CheckpointState.CLEAN, restored?.state)
+        assertNull(restored?.recovery)
+    }
+
+    @Test
+    fun observerStateIsStoredWithTheCheckpointItBelongsTo() = runTest {
+        dao.upsertCheckpoint(checkpoint(trackerState = "11050001"))
+        assertEquals("11050001", dao.checkpoint()?.trackerState)
     }
 
     // -- ledger ---------------------------------------------------------------------------------
 
     @Test
-    fun theLedgerRemembersChromesPreviousValue() = runTest {
+    fun theLedgerDistinguishesAnAbsentValueFromAnUnknownOne() = runTest {
         dao.upsertLedgerEntry(
             PolicyLedgerEntity(
                 key = "chrome.URLBlocklist",
+                previousState = PreviousPolicyState.ABSENT.name,
                 previousValue = null,
                 appliedValue = "[\"instagram.com\"]",
                 appliedAtWallMs = 10L,
             )
         )
-        val entry = dao.ledgerEntry("chrome.URLBlocklist")
-        assertNotNull(entry)
-        assertEquals(null, entry?.previousValue)
-        assertEquals(1, dao.ledger().size)
+        dao.upsertLedgerEntry(
+            PolicyLedgerEntity(
+                key = "suspended.com.example.browser",
+                previousState = PreviousPolicyState.UNKNOWN.name,
+                previousValue = null,
+                appliedValue = null,
+                appliedAtWallMs = 10L,
+            )
+        )
+
+        // Both have a null value; only one of them justifies removing the setting.
+        assertEquals(PreviousPolicyState.ABSENT, dao.ledgerEntry("chrome.URLBlocklist")?.previous)
+        assertEquals(PreviousPolicyState.UNKNOWN, dao.ledgerEntry("suspended.com.example.browser")?.previous)
+        assertEquals(2, dao.ledger().size)
     }
 }

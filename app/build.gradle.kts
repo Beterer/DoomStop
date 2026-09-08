@@ -85,6 +85,14 @@ android {
         resources.excludes += "/META-INF/{AL2.0,LGPL2.1}"
     }
 
+    sourceSets {
+        // Room's exported schemas have to be on the instrumentation classpath for
+        // MigrationTestHelper to open version 1 and replay the migration against it.
+        getByName("androidTest") {
+            assets.directories.add("$projectDir/schemas")
+        }
+    }
+
     testOptions {
         unitTests.isReturnDefaultValues = true
     }
@@ -103,6 +111,38 @@ ksp {
     arg("room.schemaLocation", "$projectDir/schemas")
 }
 
+/**
+ * A release build that is not signed cannot be installed over the provisioned device-owner
+ * app, so producing one silently is worse than failing. This makes the omission loud.
+ *
+ * `-PallowUnsignedRelease=true` is the deliberate escape hatch for inspecting an unsigned
+ * artifact during development; it must never be used for the build that goes on the phone.
+ */
+val allowUnsignedRelease = providers.gradleProperty("allowUnsignedRelease")
+    .map { it.toBoolean() }
+    .getOrElse(false)
+
+val verifyReleaseSigning = tasks.register("verifyReleaseSigning") {
+    group = "verification"
+    description = "Fails a release build when no signing key is configured."
+    val configured = hasReleaseKeystore
+    val allowed = allowUnsignedRelease
+    doLast {
+        if (!configured && !allowed) {
+            throw GradleException(
+                "No keystore.properties: this release APK would be unsigned and could not be " +
+                    "installed over the provisioned build. Create the key as described in " +
+                    "docs/setup-and-recovery.md, or pass -PallowUnsignedRelease=true for a " +
+                    "development-only artifact."
+            )
+        }
+    }
+}
+
+tasks.matching { it.name == "assembleRelease" || it.name == "bundleRelease" }.configureEach {
+    dependsOn(verifyReleaseSigning)
+}
+
 dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
@@ -110,10 +150,13 @@ dependencies {
     implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.androidx.activity.compose)
     implementation(libs.kotlinx.coroutines.android)
+    // AGP resolves the instrumentation classpath consistently with this one, and Room 2.8s
+    // schema deserializer needs kotlinx-serialization >= 1.8. Aligning the whole graph here
+    // is what stops a transitive 1.7 BOM from deciding it for the migration test.
+    implementation(platform(libs.kotlinx.serialization.bom))
 
     val composeBom = platform(libs.androidx.compose.bom)
     implementation(composeBom)
-    androidTestImplementation(composeBom)
     implementation(libs.androidx.compose.ui)
     implementation(libs.androidx.compose.ui.graphics)
     implementation(libs.androidx.compose.ui.tooling.preview)
@@ -131,5 +174,8 @@ dependencies {
     androidTestImplementation(libs.androidx.test.core)
     androidTestImplementation(libs.androidx.test.runner)
     androidTestImplementation(libs.androidx.room.testing)
+    // Room 2.8 deserializes the exported schema with kotlinx-serialization; without an
+    // explicit, current runtime the generated serializers hit an AbstractMethodError.
+    androidTestImplementation(libs.kotlinx.serialization.json)
     androidTestImplementation(libs.kotlinx.coroutines.test)
 }

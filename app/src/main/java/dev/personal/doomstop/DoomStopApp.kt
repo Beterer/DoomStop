@@ -30,7 +30,11 @@ class DoomStopApp : Application() {
     val usageReader: UsageEventReader by lazy { UsageEventReader(this) }
     val bootMarker: BootMarkerStore by lazy { BootMarkerStore(this) }
     val notifications: MonitorNotifications by lazy { MonitorNotifications(this) }
-    val pinManager: PinManager by lazy { PinManager(DaoPinStore(dao)) }
+
+    /** One clock for everything, so PIN cooldowns and accounting agree about reboots. */
+    val clock: AndroidClockSource by lazy { AndroidClockSource(this) }
+
+    val pinManager: PinManager by lazy { PinManager(DaoPinStore(dao), clock) }
 
     val coordinator: LimiterCoordinator by lazy {
         LimiterCoordinator(
@@ -39,7 +43,7 @@ class DoomStopApp : Application() {
             policy = policy,
             reader = usageReader,
             bootMarker = bootMarker,
-            clock = AndroidClockSource(this),
+            clock = clock,
             deadlines = DeadlineScheduler(this),
         )
     }

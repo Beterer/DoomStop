@@ -2,6 +2,7 @@ package dev.personal.doomstop.security
 
 import dev.personal.doomstop.data.PinAttemptsEntity
 import dev.personal.doomstop.data.PinVerifierEntity
+import dev.personal.doomstop.domain.ClockSource
 import java.security.MessageDigest
 import java.security.SecureRandom
 import java.util.Base64
@@ -51,16 +52,33 @@ object PinThrottle {
     }
 
     /**
-     * How long a cooldown still has to run.
+     * How long a cooldown still has to run, against BOTH clocks.
      *
-     * Two clocks are compared, not one: a cooldown is also treated as active while "now" is
-     * EARLIER than the last recorded failure. Winding the clock backwards therefore cannot
-     * end a lockout early.
+     * A cooldown is treated as active while "now" is earlier than the last recorded failure,
+     * so winding the clock backwards cannot end a lockout early. Winding it FORWARD is the
+     * symmetric attack and is covered by the monotonic deadline, which nothing in the date
+     * settings can touch -- within one boot the longer of the two remainders wins. Across a
+     * reboot the monotonic reference is meaningless and only the wall-clock deadline is left,
+     * which is why both are recorded rather than one.
      */
-    fun remainingMs(attempts: PinAttemptsEntity, nowWallMs: Long): Long {
+    fun remainingMs(
+        attempts: PinAttemptsEntity,
+        nowWallMs: Long,
+        nowElapsedMs: Long,
+        bootId: String,
+    ): Long {
         if (attempts.consecutiveFailures < FAILURES_BEFORE_THROTTLING) return 0
-        if (nowWallMs < attempts.lastFailureWallMs) return lockDurationMs(attempts.consecutiveFailures)
-        return (attempts.nextAllowedWallMs - nowWallMs).coerceAtLeast(0L)
+        val byWall = if (nowWallMs < attempts.lastFailureWallMs) {
+            lockDurationMs(attempts.consecutiveFailures)
+        } else {
+            (attempts.nextAllowedWallMs - nowWallMs).coerceAtLeast(0L)
+        }
+        val byMonotonic = if (attempts.lockBootId == bootId) {
+            (attempts.nextAllowedElapsedMs - nowElapsedMs).coerceAtLeast(0L)
+        } else {
+            0L
+        }
+        return maxOf(byWall, byMonotonic)
     }
 }
 
@@ -74,9 +92,14 @@ object PinThrottle {
  * Nothing here should be read as "hashing makes the PIN strong".
  *
  * The PIN is a String throughout, never an Int, so leading zeros survive.
+ *
+ * Creating the first PIN and replacing an existing one are separate operations on purpose.
+ * A single "set" that quietly did both meant the only thing standing between the phone's
+ * user and a new PIN was whether the UI had drawn the button.
  */
 class PinManager(
     private val store: PinStore,
+    private val clock: ClockSource,
     private val dispatcher: CoroutineDispatcher = Dispatchers.Default,
 ) {
 
@@ -96,15 +119,52 @@ class PinManager(
         scaled.coerceIn(MIN_ITERATIONS, MAX_ITERATIONS)
     }
 
+    /** Create the very first PIN. Refused outright once a verifier exists. */
+    suspend fun setInitialPin(pin: String, iterations: Int? = null): Result<Unit> {
+        if (store.verifier() != null) {
+            return Result.failure(IllegalStateException("A PIN already exists; replacing it needs authorization"))
+        }
+        return writePin(pin, iterations) { true }
+    }
+
     /**
-     * Store a new PIN. Replacing an existing PIN also clears the throttling counters,
+     * Replace an existing PIN.
+     *
+     * [authorize] is consulted immediately before the new verifier is written, not only
+     * before the work starts. Deriving the key takes a few hundred milliseconds, and the
+     * admin session can end during them -- by timing out, or by the phone's user taking the
+     * device back while the trusted person's session is still open.
+     */
+    suspend fun replacePin(
+        pin: String,
+        iterations: Int? = null,
+        authorize: suspend () -> Boolean,
+    ): Result<Unit> {
+        if (store.verifier() == null) {
+            return Result.failure(IllegalStateException("No PIN has been set yet"))
+        }
+        if (!authorize()) {
+            return Result.failure(IllegalStateException("Authorization is required to change the PIN"))
+        }
+        return writePin(pin, iterations, authorize)
+    }
+
+    /**
+     * Store a PIN. Replacing an existing PIN also clears the throttling counters,
      * because those exist to slow down guessing at the OLD secret.
      */
-    suspend fun setPin(pin: String, iterations: Int? = null): Result<Unit> {
+    private suspend fun writePin(
+        pin: String,
+        iterations: Int?,
+        authorize: suspend () -> Boolean,
+    ): Result<Unit> {
         validate(pin)?.let { return Result.failure(IllegalArgumentException(it)) }
         val rounds = iterations ?: calibrateIterations()
         val salt = ByteArray(SALT_BYTES).also { SecureRandom().nextBytes(it) }
         val verifier = withContext(dispatcher) { derive(pin, salt, rounds) }
+        if (!authorize()) {
+            return Result.failure(IllegalStateException("Authorization expired before the new PIN was saved"))
+        }
         store.saveVerifier(
             PinVerifierEntity(
                 version = VERIFIER_VERSION,
@@ -114,14 +174,22 @@ class PinManager(
                 verifierBase64 = Base64.getEncoder().encodeToString(verifier),
             )
         )
-        store.saveAttempts(PinAttemptsEntity(consecutiveFailures = 0, lastFailureWallMs = 0, nextAllowedWallMs = 0))
+        store.saveAttempts(
+            PinAttemptsEntity(
+                consecutiveFailures = 0,
+                lastFailureWallMs = 0,
+                nextAllowedWallMs = 0,
+                lockBootId = "",
+                nextAllowedElapsedMs = 0,
+            )
+        )
         return Result.success(Unit)
     }
 
     /** Current cooldown, for the PIN screen's countdown, without spending an attempt. */
-    suspend fun throttleState(nowWallMs: Long): ThrottleState {
+    suspend fun throttleState(): ThrottleState {
         val attempts = store.attempts() ?: return ThrottleState(0, 0)
-        return ThrottleState(attempts.consecutiveFailures, PinThrottle.remainingMs(attempts, nowWallMs))
+        return ThrottleState(attempts.consecutiveFailures, remaining(attempts))
     }
 
     /**
@@ -131,36 +199,56 @@ class PinManager(
      * returns a single-use ticket; the caller redeems it for exactly one action, and a new
      * PIN entry is required for the next one.
      */
-    suspend fun verify(pin: String, nowWallMs: Long): PinResult {
+    suspend fun verify(pin: String): PinResult {
         val stored = store.verifier() ?: return PinResult.NotSet
         validate(pin)?.let { return PinResult.Malformed(it) }
 
-        val attempts = store.attempts()
-            ?: PinAttemptsEntity(consecutiveFailures = 0, lastFailureWallMs = 0, nextAllowedWallMs = 0)
-        val locked = PinThrottle.remainingMs(attempts, nowWallMs)
+        val attempts = store.attempts() ?: PinAttemptsEntity(
+            consecutiveFailures = 0,
+            lastFailureWallMs = 0,
+            nextAllowedWallMs = 0,
+        )
+        val locked = remaining(attempts)
         if (locked > 0) return PinResult.Throttled(locked)
 
+        val nowWallMs = clock.wallTimeMs()
         val salt = Base64.getDecoder().decode(stored.saltBase64)
         val expected = Base64.getDecoder().decode(stored.verifierBase64)
         val actual = withContext(dispatcher) { derive(pin, salt, stored.iterations) }
 
         // Constant-time comparison: MessageDigest.isEqual does not short-circuit.
         return if (MessageDigest.isEqual(expected, actual)) {
-            store.saveAttempts(attempts.copy(consecutiveFailures = 0, nextAllowedWallMs = 0))
+            store.saveAttempts(
+                attempts.copy(
+                    consecutiveFailures = 0,
+                    nextAllowedWallMs = 0,
+                    lockBootId = "",
+                    nextAllowedElapsedMs = 0,
+                )
+            )
             PinResult.Success(AuthorizationTicket(UUID.randomUUID().toString(), nowWallMs))
         } else {
             val failures = attempts.consecutiveFailures + 1
-            val nextAllowed = nowWallMs + PinThrottle.lockDurationMs(failures)
+            val lockMs = PinThrottle.lockDurationMs(failures)
             store.saveAttempts(
                 attempts.copy(
                     consecutiveFailures = failures,
                     lastFailureWallMs = nowWallMs,
-                    nextAllowedWallMs = nextAllowed,
+                    nextAllowedWallMs = nowWallMs + lockMs,
+                    lockBootId = clock.bootId(),
+                    nextAllowedElapsedMs = clock.elapsedRealtimeMs() + lockMs,
                 )
             )
-            PinResult.Wrong(failures, nextAllowed)
+            PinResult.Wrong(failures, nowWallMs + lockMs)
         }
     }
+
+    private fun remaining(attempts: PinAttemptsEntity): Long = PinThrottle.remainingMs(
+        attempts = attempts,
+        nowWallMs = clock.wallTimeMs(),
+        nowElapsedMs = clock.elapsedRealtimeMs(),
+        bootId = clock.bootId(),
+    )
 
     private fun validate(pin: String): String? = when {
         pin.length != PIN_LENGTH -> "The PIN must be exactly $PIN_LENGTH digits"

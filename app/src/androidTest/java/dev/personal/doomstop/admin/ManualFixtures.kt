@@ -36,7 +36,7 @@ class ManualFixtures {
     @Test
     fun releaseEverything() {
         assumeTrue(policy.isDeviceOwner)
-        val report = policy.releaseAll()
+        val report = policy.release(policy.manageablePackages())
         println("DOOMSTOP-FIXTURE released=${report.installed.map { it.packageName to it.actualSuspended }}")
     }
 
@@ -46,6 +46,6 @@ class ManualFixtures {
     fun applyChromePolicyAndLeaveItApplied() {
         assumeTrue(policy.isDeviceOwner)
         val report = policy.applyChromeBlocklist()
-        println("DOOMSTOP-FIXTURE chromeSatisfied=${report.satisfied} value=${report.verifiedValue}")
+        println("DOOMSTOP-FIXTURE chromeStored=${report.storedPolicyVerified} value=${report.verifiedValue}")
     }
 }

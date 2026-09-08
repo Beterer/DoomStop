@@ -4,6 +4,7 @@ import android.os.Bundle
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.viewModels
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
@@ -20,7 +21,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.lifecycle.viewmodel.compose.viewModel
 import dev.personal.doomstop.monitor.AppPermissions
 import dev.personal.doomstop.monitor.UsageMonitorService
 import dev.personal.doomstop.ui.AdminScreen
@@ -34,6 +34,8 @@ import dev.personal.doomstop.ui.StatusScreen
 
 class MainActivity : ComponentActivity() {
 
+    private val viewModel: LimiterViewModel by viewModels()
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         // Opening the limiter is also the reliable way to get the monitor back after it has
@@ -44,6 +46,7 @@ class MainActivity : ComponentActivity() {
             DoomStopTheme {
                 Surface(Modifier.fillMaxSize()) {
                     DoomStopApp(
+                        viewModel = viewModel,
                         onSecureWindow = ::setSecureWindow,
                     )
                 }
@@ -54,6 +57,19 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         UsageMonitorService.start(this)
+    }
+
+    /**
+     * Losing the foreground ends the admin session.
+     *
+     * Without this, a trusted person could enter the PIN, press Home, hand the phone back,
+     * and the phone's own user could return to a still-authorised settings screen. A
+     * configuration change is explicitly distinguished, so rotating the device does not sign
+     * anyone out -- while genuinely leaving, locking or switching apps does.
+     */
+    override fun onStop() {
+        super.onStop()
+        if (!isChangingConfigurations) viewModel.onMovedToBackground()
     }
 
     /**
@@ -70,14 +86,14 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-private fun DoomStopApp(onSecureWindow: (Boolean) -> Unit) {
-    val viewModel: LimiterViewModel = viewModel()
+private fun DoomStopApp(viewModel: LimiterViewModel, onSecureWindow: (Boolean) -> Unit) {
     val status by viewModel.status.collectAsStateWithLifecycle()
     val screen by viewModel.screen.collectAsStateWithLifecycle()
     val pinError by viewModel.pinError.collectAsStateWithLifecycle()
     val throttle by viewModel.throttle.collectAsStateWithLifecycle()
     val busy by viewModel.busy.collectAsStateWithLifecycle()
     val toast by viewModel.toast.collectAsStateWithLifecycle()
+    val restoreReport by viewModel.restoreReport.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val snackbarHostState = remember { SnackbarHostState() }
 
@@ -133,15 +149,22 @@ private fun DoomStopApp(onSecureWindow: (Boolean) -> Unit) {
                 )
 
                 Screen.ChangePin -> ChangePinFlow(
+                    replacing = status.pinSet,
                     error = pinError,
                     busy = busy,
-                    onDone = { first, second -> viewModel.setInitialPin(first, second) },
+                    onDone = { first, second ->
+                        // Creating the first PIN and replacing an existing one are different
+                        // guarded operations; the UI never decides which guard applies.
+                        if (status.pinSet) viewModel.changePin(first, second)
+                        else viewModel.setInitialPin(first, second)
+                    },
                     onCancel = { viewModel.show(if (status.setupCompleted) Screen.Status else Screen.Setup) },
                 )
 
                 Screen.Admin -> AdminScreen(
                     status = status,
                     busy = busy,
+                    restoreReport = restoreReport,
                     onInteraction = viewModel::noteAdminInteraction,
                     previewAllowance = viewModel::previewAllowance,
                     onSave = viewModel::updateSettings,
@@ -149,6 +172,7 @@ private fun DoomStopApp(onSecureWindow: (Boolean) -> Unit) {
                     onApplyHardening = viewModel::applyHardening,
                     onAcknowledgeRecovery = viewModel::acknowledgeRecovery,
                     onRestoreDevice = viewModel::restoreDevice,
+                    onCancelMaintenance = viewModel::cancelMaintenance,
                     onBack = { viewModel.show(Screen.Status) },
                 )
             }
@@ -159,6 +183,7 @@ private fun DoomStopApp(onSecureWindow: (Boolean) -> Unit) {
 /** Enter the new PIN twice. The first entry is held only in this composable's state. */
 @Composable
 private fun ChangePinFlow(
+    replacing: Boolean,
     error: String?,
     busy: Boolean,
     onDone: (String, String) -> Unit,
@@ -167,7 +192,11 @@ private fun ChangePinFlow(
     var firstEntry by remember { mutableStateOf<String?>(null) }
     val first = firstEntry
     PinScreen(
-        title = if (first == null) "Choose a PIN" else "Confirm the PIN",
+        title = when {
+            first != null -> "Confirm the PIN"
+            replacing -> "Choose a new PIN"
+            else -> "Choose a PIN"
+        },
         subtitle = if (first == null) {
             "Six digits, leading zeros allowed. The phone's user should not know it."
         } else {

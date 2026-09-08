@@ -1,6 +1,7 @@
 package dev.personal.doomstop.ui
 
 import android.app.Application
+import android.os.SystemClock
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import dev.personal.doomstop.DoomStopApp
@@ -8,6 +9,7 @@ import dev.personal.doomstop.admin.HardeningOptions
 import dev.personal.doomstop.core.LimiterStatus
 import dev.personal.doomstop.core.RestoreReport
 import dev.personal.doomstop.core.Trigger
+import dev.personal.doomstop.monitor.UsageMonitorService
 import dev.personal.doomstop.security.AuthorizationTicket
 import dev.personal.doomstop.security.PinResult
 import dev.personal.doomstop.security.ThrottleState
@@ -53,12 +55,28 @@ class LimiterViewModel(application: Application) : AndroidViewModel(application)
     private val _toast = MutableStateFlow<Toast?>(null)
     val toast: StateFlow<Toast?> = _toast.asStateFlow()
 
+    private val _restoreReport = MutableStateFlow<RestoreReport?>(null)
+    val restoreReport: StateFlow<RestoreReport?> = _restoreReport.asStateFlow()
+
     /**
-     * Authentication is held only while the admin screen is open, and only briefly.
-     * There is deliberately no "remember me": leaving the screen or going idle drops it.
+     * Authentication is held only while the admin screen is open, only briefly, and only
+     * while the app is actually in front of the person who authenticated.
+     *
+     * The expiry is monotonic and is checked at every protected operation rather than being
+     * left to a timer coroutine, and [onMovedToBackground] revokes it outright. Without
+     * that, a trusted person could enter the PIN, hand the phone back, and the phone's own
+     * user could return to a still-open admin session.
      */
     private var adminSession: AuthorizationTicket? = null
+    private var adminExpiresAtElapsedMs = 0L
     private var adminIdleJob: Job? = null
+
+    /**
+     * Bumped whenever authorization is dropped. A PIN verification that was already running
+     * carries the generation it started with, so a verification that completes after the app
+     * went to the background cannot open a session.
+     */
+    private var authorizationGeneration = 0
 
     init {
         viewModelScope.launch { app.coordinator.tick(Trigger.UI) }
@@ -68,7 +86,7 @@ class LimiterViewModel(application: Application) : AndroidViewModel(application)
     /** The PIN screen shows a live countdown, so the cooldown has to tick down on its own. */
     private suspend fun refreshThrottleLoop() {
         while (true) {
-            _throttle.value = app.pinManager.throttleState(System.currentTimeMillis())
+            _throttle.value = app.pinManager.throttleState()
             delay(1_000)
         }
     }
@@ -83,15 +101,45 @@ class LimiterViewModel(application: Application) : AndroidViewModel(application)
         _toast.value = null
     }
 
+    fun dismissRestoreReport() {
+        _restoreReport.value = null
+    }
+
+    /**
+     * Called when the app stops being visible: Home, app switch, screen off, or lock.
+     *
+     * The activity distinguishes a configuration change from a real departure, so rotating
+     * the phone does not sign the trusted person out mid-sentence while genuinely leaving
+     * does.
+     */
+    fun onMovedToBackground() {
+        val hadSession = adminSession != null
+        clearAdminSession()
+        if (_screen.value is Screen.Admin || _screen.value is Screen.ChangePin || _screen.value is Screen.Pin) {
+            _screen.value = Screen.Status
+            _pinError.value = null
+        }
+        if (hadSession) _toast.value = Toast("Settings were locked when DoomStop left the screen")
+    }
+
     // -- PIN ------------------------------------------------------------------------------
 
     fun submitPin(pin: String, purpose: PinPurpose) {
         if (_busy.value) return
         _busy.value = true
+        val generation = authorizationGeneration
         viewModelScope.launch {
             try {
-                when (val result = app.pinManager.verify(pin, System.currentTimeMillis())) {
-                    is PinResult.Success -> onPinAccepted(result.ticket, purpose)
+                when (val result = app.pinManager.verify(pin)) {
+                    is PinResult.Success -> {
+                        if (generation != authorizationGeneration) {
+                            // The app left the foreground while the key was being derived.
+                            _pinError.value = "Enter the PIN again"
+                        } else {
+                            onPinAccepted(result.ticket, purpose)
+                        }
+                    }
+
                     is PinResult.Wrong -> _pinError.value = wrongPinMessage(result.consecutiveFailures)
                     is PinResult.Throttled ->
                         _pinError.value = "Locked for ${formatDuration(result.remainingMs)}"
@@ -99,7 +147,7 @@ class LimiterViewModel(application: Application) : AndroidViewModel(application)
                     PinResult.NotSet -> _pinError.value = "No PIN has been set yet"
                     is PinResult.Malformed -> _pinError.value = result.reason
                 }
-                _throttle.value = app.pinManager.throttleState(System.currentTimeMillis())
+                _throttle.value = app.pinManager.throttleState()
             } finally {
                 _busy.value = false
             }
@@ -135,9 +183,11 @@ class LimiterViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private fun startAdminIdleTimer() {
+        adminExpiresAtElapsedMs = SystemClock.elapsedRealtime() + ADMIN_IDLE_TIMEOUT_MS
         adminIdleJob?.cancel()
         adminIdleJob = viewModelScope.launch {
             delay(ADMIN_IDLE_TIMEOUT_MS)
+            if (!adminSessionValid()) return@launch
             clearAdminSession()
             _screen.value = Screen.Status
             _toast.value = Toast("Signed out of settings after inactivity")
@@ -145,13 +195,18 @@ class LimiterViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun noteAdminInteraction() {
-        if (adminSession != null) startAdminIdleTimer()
+        if (adminSessionValid()) startAdminIdleTimer()
     }
+
+    private fun adminSessionValid(): Boolean =
+        adminSession != null && SystemClock.elapsedRealtime() < adminExpiresAtElapsedMs
 
     private fun clearAdminSession() {
         adminSession = null
+        adminExpiresAtElapsedMs = 0L
         adminIdleJob?.cancel()
         adminIdleJob = null
+        authorizationGeneration++
     }
 
     override fun onCleared() {
@@ -160,6 +215,7 @@ class LimiterViewModel(application: Application) : AndroidViewModel(application)
 
     // -- setup ----------------------------------------------------------------------------
 
+    /** First-time PIN creation. Refused by [dev.personal.doomstop.security.PinManager] once one exists. */
     fun setInitialPin(pin: String, confirmation: String) {
         if (pin != confirmation) {
             _pinError.value = "The two entries do not match"
@@ -168,11 +224,48 @@ class LimiterViewModel(application: Application) : AndroidViewModel(application)
         _busy.value = true
         viewModelScope.launch {
             try {
-                app.pinManager.setPin(pin)
+                app.pinManager.setInitialPin(pin)
                     .onSuccess {
                         _pinError.value = null
                         _toast.value = Toast("PIN saved")
-                        _screen.value = if (status.value.setupCompleted) Screen.Admin else Screen.Setup
+                        _screen.value = Screen.Setup
+                        app.coordinator.tick(Trigger.ADMIN_ACTION)
+                    }
+                    .onFailure { _pinError.value = it.message }
+            } finally {
+                _busy.value = false
+            }
+        }
+    }
+
+    /**
+     * Replace an existing PIN. Authorization is checked when the request is made AND again
+     * at the moment the new verifier is written, because deriving it is slow enough for the
+     * session to end in between.
+     */
+    fun changePin(pin: String, confirmation: String) {
+        if (pin != confirmation) {
+            _pinError.value = "The two entries do not match"
+            return
+        }
+        if (!adminSessionValid()) {
+            clearAdminSession()
+            _toast.value = Toast("Enter the PIN again to change it", isError = true)
+            _screen.value = Screen.Pin(PinPurpose.OPEN_ADMIN)
+            return
+        }
+        _busy.value = true
+        val generation = authorizationGeneration
+        viewModelScope.launch {
+            try {
+                app.pinManager
+                    .replacePin(pin) { generation == authorizationGeneration && adminSessionValid() }
+                    .onSuccess {
+                        _pinError.value = null
+                        _toast.value = Toast("PIN changed")
+                        // The old ticket authorised the old secret; require a fresh entry.
+                        clearAdminSession()
+                        _screen.value = Screen.Status
                         app.coordinator.tick(Trigger.ADMIN_ACTION)
                     }
                     .onFailure { _pinError.value = it.message }
@@ -183,19 +276,21 @@ class LimiterViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun completeSetup() = launchBusy {
-        val result = app.coordinator.completeSetup()
-        _toast.value = if (result.protectionActive) {
-            Toast("Protection is active")
-        } else {
-            Toast("Setup saved, but protection is incomplete — see the checklist", isError = true)
+        val outcome = app.coordinator.completeSetup()
+        _toast.value = when {
+            outcome.missing.isNotEmpty() ->
+                Toast("Not started: ${outcome.missing.joinToString()}", isError = true)
+
+            outcome.protectionActive -> Toast("Protection is active")
+            else -> Toast("Setup saved, but protection is incomplete — see the checklist", isError = true)
         }
-        _screen.value = Screen.Status
+        if (outcome.missing.isEmpty()) _screen.value = Screen.Status
     }
 
     fun refresh() = launchBusy { app.coordinator.tick(Trigger.UI) }
 
     fun startMonitor() {
-        dev.personal.doomstop.monitor.UsageMonitorService.start(getApplication())
+        UsageMonitorService.start(getApplication())
         refresh()
     }
 
@@ -219,28 +314,51 @@ class LimiterViewModel(application: Application) : AndroidViewModel(application)
         _toast.value = Toast("Recovery acknowledged; charged time was preserved")
     }
 
-    fun restoreDevice(relinquishOwnership: Boolean) = requireAdmin {
-        val report: RestoreReport = app.coordinator.restoreDevice(relinquishOwnership)
+    fun restoreDevice(relinquishOwnership: Boolean, releaseUnknownPackages: Boolean = false) = requireAdmin {
+        val report: RestoreReport = app.coordinator.restoreDevice(relinquishOwnership, releaseUnknownPackages)
+        _restoreReport.value = report
         _toast.value = when {
-            report.error != null -> Toast("Restore incomplete: ${report.error}", isError = true)
-            relinquishOwnership && report.ownershipRelinquished == true ->
+            !report.completed ->
+                Toast("Restore stopped: ${report.failures.first().name}", isError = true)
+
+            report.ownershipRelinquished == true ->
                 Toast("Policies restored and device ownership released")
 
             else -> Toast("Policies restored; DoomStop is still the device owner")
         }
-        _screen.value = Screen.Status
+        if (report.completed) _screen.value = Screen.Status
+    }
+
+    fun cancelMaintenance() = requireAdmin {
+        app.coordinator.cancelMaintenance()
+        _restoreReport.value = null
+        _toast.value = Toast("Maintenance cancelled; enforcement resumed")
     }
 
     // -- helpers -----------------------------------------------------------------------------
 
+    /**
+     * Every protected action re-checks authorization here, at the boundary, and again after
+     * the previous one may have been invalidated -- rather than trusting that the screen it
+     * was invoked from could only have been reached with a valid session.
+     */
     private fun requireAdmin(block: suspend () -> Unit) {
-        if (adminSession == null) {
+        if (!adminSessionValid()) {
+            clearAdminSession()
             _toast.value = Toast("Enter the PIN again to make changes", isError = true)
             _screen.value = Screen.Pin(PinPurpose.OPEN_ADMIN)
             return
         }
         noteAdminInteraction()
-        launchBusy(block)
+        val generation = authorizationGeneration
+        launchBusy {
+            if (generation != authorizationGeneration || !adminSessionValid()) {
+                _toast.value = Toast("Authorization expired before that could run", isError = true)
+                _screen.value = Screen.Status
+                return@launchBusy
+            }
+            block()
+        }
     }
 
     private fun launchBusy(block: suspend () -> Unit) {

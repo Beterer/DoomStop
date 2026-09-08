@@ -3,6 +3,7 @@ package dev.personal.doomstop.monitor
 import dev.personal.doomstop.config.TargetPackages
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -13,8 +14,8 @@ class VisibleTargetTrackerTest {
     private val reddit = TargetPackages.REDDIT
     private val launcher = "com.google.android.apps.nexuslauncher"
 
-    private fun tracker(graceMs: Long = VisibleTargetTracker.DEFAULT_PAUSED_GRACE_MS) =
-        VisibleTargetTracker(targets, graceMs)
+    private fun tracker(pausedVisibleMs: Long = VisibleTargetTracker.DEFAULT_PAUSED_VISIBLE_MS) =
+        VisibleTargetTracker(targets, pausedVisibleMs)
 
     private fun event(
         t: Long,
@@ -56,18 +57,60 @@ class VisibleTargetTrackerTest {
         assertEquals(2_300L, transitions[0].atWallMs)
     }
 
+    // -- paused-but-visible, i.e. picture-in-picture -------------------------------------
+
     @Test
-    fun `a paused activity keeps counting until the grace expires`() {
-        val tracker = tracker(graceMs = 5_000)
+    fun `a paused activity keeps being metered well past the old ninety-second cut-off`() {
+        // The defect: after ninety seconds the tracker silently decided "not visible", so a
+        // target that was genuinely still on screen stopped costing anything.
+        val tracker = tracker()
         tracker.apply(listOf(event(1_000, instagram, TrackedEventType.ACTIVITY_RESUMED)), 1_500)
-        // Paused and never stopped, as happens in picture-in-picture.
         tracker.apply(listOf(event(2_000, instagram, TrackedEventType.ACTIVITY_PAUSED)), 3_000)
-        assertTrue("still visible inside the grace", tracker.isVisible)
+
+        tracker.apply(emptyList(), 2_000 + 91_000)
+        assertTrue("still metered two minutes into a paused-and-visible session", tracker.isVisible)
+
+        tracker.apply(emptyList(), 2_000 + 5 * 60_000)
+        assertTrue("and five minutes in", tracker.isVisible)
+    }
+
+    @Test
+    fun `a paused activity that never stops becomes unresolved rather than free`() {
+        val tracker = tracker(pausedVisibleMs = 5_000)
+        tracker.apply(listOf(event(1_000, instagram, TrackedEventType.ACTIVITY_RESUMED)), 1_500)
+        tracker.apply(listOf(event(2_000, instagram, TrackedEventType.ACTIVITY_PAUSED)), 3_000)
+        assertTrue(tracker.isVisible)
+        assertFalse(tracker.hasUnresolved)
 
         val transitions = tracker.apply(emptyList(), 9_000)
-        assertFalse("grace expired", tracker.isVisible)
+        assertFalse(tracker.isVisible)
+        assertTrue("the state is declared unresolved, not decided", tracker.hasUnresolved)
         assertEquals(1, transitions.size)
-        assertEquals("visibility drops exactly at the grace deadline", 7_000L, transitions[0].atWallMs)
+        assertEquals("visibility drops exactly at the deadline", 7_000L, transitions[0].atWallMs)
+    }
+
+    @Test
+    fun `turning the screen off clears a paused activity, so a lost stop event self-heals`() {
+        val tracker = tracker(pausedVisibleMs = 5_000)
+        tracker.apply(listOf(event(1_000, instagram, TrackedEventType.ACTIVITY_RESUMED)), 1_500)
+        // Paused, and the STOPPED never arrives.
+        tracker.apply(listOf(event(2_000, instagram, TrackedEventType.ACTIVITY_PAUSED)), 2_500)
+        tracker.apply(listOf(event(3_000, "android", TrackedEventType.SCREEN_NON_INTERACTIVE)), 3_500)
+        assertFalse(tracker.isVisible)
+
+        tracker.apply(listOf(event(4_000, "android", TrackedEventType.SCREEN_INTERACTIVE)), 20_000)
+        assertFalse("the phantom did not come back with the screen", tracker.isVisible)
+        assertFalse("and nothing is left unresolved", tracker.hasUnresolved)
+    }
+
+    @Test
+    fun `a resumed activity survives the screen going off and on`() {
+        val tracker = tracker()
+        tracker.apply(listOf(event(1_000, instagram, TrackedEventType.ACTIVITY_RESUMED)), 1_500)
+        tracker.apply(listOf(event(2_000, "android", TrackedEventType.SCREEN_NON_INTERACTIVE)), 2_500)
+        assertFalse(tracker.isVisible)
+        tracker.apply(listOf(event(3_000, "android", TrackedEventType.SCREEN_INTERACTIVE)), 3_500)
+        assertTrue(tracker.isVisible)
     }
 
     @Test
@@ -198,5 +241,93 @@ class VisibleTargetTrackerTest {
         assertEquals(instagram, snapshot.activities[0].packageName)
         assertEquals("resumed", snapshot.activities[0].state)
         assertEquals(3_000L, snapshot.activities[0].ageMs)
+    }
+
+    // -- surviving a restart ---------------------------------------------------------------
+
+    @Test
+    fun `an app left open across a restart keeps being metered`() {
+        // The defect this defends: a new process built an EMPTY observer while the durable
+        // checkpoint said a target was on screen, so the rest of that same session was free.
+        val before = tracker()
+        before.apply(listOf(event(1_000, instagram, TrackedEventType.ACTIVITY_RESUMED)), 2_000)
+        assertTrue(before.isVisible)
+
+        val encoded = before.exportState().encode()
+        val after = tracker()
+        after.restore(requireNotNull(TrackerState.decode(encoded)))
+
+        assertTrue("the restarted observer knows the app is still open", after.isVisible)
+        val transitions = after.apply(emptyList(), 10_000)
+        assertTrue("and no phantom transition is emitted", transitions.isEmpty())
+        assertTrue(after.isVisible)
+    }
+
+    @Test
+    fun `a restart followed by leaving the app stops metering at the right instant`() {
+        val before = tracker()
+        before.apply(listOf(event(1_000, instagram, TrackedEventType.ACTIVITY_RESUMED)), 2_000)
+        val after = tracker()
+        after.restore(requireNotNull(TrackerState.decode(before.exportState().encode())))
+
+        val transitions = after.apply(
+            listOf(
+                event(4_000, instagram, TrackedEventType.ACTIVITY_PAUSED),
+                event(4_200, instagram, TrackedEventType.ACTIVITY_STOPPED),
+            ),
+            5_000,
+        )
+        assertFalse(after.isVisible)
+        assertEquals(1, transitions.size)
+        assertEquals(4_200L, transitions.single().atWallMs)
+    }
+
+    @Test
+    fun `a restart while the phone is locked does not start metering`() {
+        val before = tracker()
+        before.apply(listOf(event(1_000, instagram, TrackedEventType.ACTIVITY_RESUMED)), 1_500)
+        before.observeScreenState(interactive = false, keyguardLocked = true, atWallMs = 2_000)
+
+        val after = tracker()
+        after.restore(requireNotNull(TrackerState.decode(before.exportState().encode())))
+        assertFalse(after.isVisible)
+    }
+
+    @Test
+    fun `an unresolved paused activity survives a restart as unresolved`() {
+        val before = tracker(pausedVisibleMs = 5_000)
+        before.apply(listOf(event(1_000, instagram, TrackedEventType.ACTIVITY_RESUMED)), 1_500)
+        before.apply(listOf(event(2_000, instagram, TrackedEventType.ACTIVITY_PAUSED)), 9_000)
+        assertTrue(before.hasUnresolved)
+
+        val after = tracker(pausedVisibleMs = 5_000)
+        after.restore(requireNotNull(TrackerState.decode(before.exportState().encode())))
+        assertTrue(after.hasUnresolved)
+        assertFalse(after.isVisible)
+    }
+
+    @Test
+    fun `observer state round-trips through its encoding`() {
+        val tracker = tracker()
+        tracker.apply(
+            listOf(
+                event(1_000, instagram, TrackedEventType.ACTIVITY_RESUMED),
+                event(1_500, reddit, TrackedEventType.ACTIVITY_RESUMED),
+                event(2_000, reddit, TrackedEventType.ACTIVITY_PAUSED),
+            ),
+            2_500,
+        )
+        val state = tracker.exportState()
+        assertEquals(state, TrackerState.decode(state.encode()))
+    }
+
+    @Test
+    fun `unreadable observer state decodes to nothing rather than to something wrong`() {
+        assertNull(TrackerState.decode(null))
+        assertNull(TrackerState.decode(""))
+        assertNull(TrackerState.decode("not a serialized observer"))
+        // A version tag this build does not understand is refused rather than half-read.
+        val fromTheFuture = "9" + TrackerState(true, false, 5_000, true, emptyList()).encode()
+        assertNull(TrackerState.decode(fromTheFuture))
     }
 }

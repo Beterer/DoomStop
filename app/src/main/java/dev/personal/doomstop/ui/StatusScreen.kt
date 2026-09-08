@@ -113,6 +113,7 @@ fun StatusScreen(
 @Composable
 private fun RemainingHeadline(status: LimiterStatus) {
     val headline = when {
+        status.maintenanceMode -> "Maintenance — not enforcing"
         status.checkpointState == CheckpointState.UNCERTAIN -> "Needs attention"
         status.enforcement.reason == EnforcementReason.MONITOR_UNHEALTHY -> "Monitoring unavailable"
         status.enforcement.suspendTargets -> "Used up for today"
@@ -141,10 +142,25 @@ private fun ProtectionCard(status: LimiterStatus, onOpenSetup: () -> Unit) {
     SectionCard(if (status.protectionActive) "Protected" else "Not fully protected") {
         if (status.protectionActive) {
             Text(
-                "Device owner, monitoring, PIN, site policy and app suspension are all verified.",
+                "Device owner, monitoring, PIN, uninstall protection, the stored site policy and " +
+                    "app suspension were all read back from the platform.",
                 style = MaterialTheme.typography.bodyMedium,
             )
         } else {
+            if (status.maintenanceMode) {
+                Text(
+                    "Maintenance mode is on, so nothing is being enforced. End it from Settings.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+            status.recovery?.let {
+                Text(
+                    "Waiting on the PIN holder: ${it.reason}.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
             for (item in missing) CheckRow(item.label, false, item.remedy)
             TextButton(onClick = onOpenSetup) { Text("Open setup and diagnostics") }
         }

@@ -124,7 +124,7 @@ class EnforcementIntegrationTest {
 
     @After
     fun tearDown() {
-        if (this::policy.isInitialized && policy.isDeviceOwner) policy.releaseAll()
+        if (this::policy.isInitialized && policy.isDeviceOwner) policy.release(policy.manageablePackages())
         if (this::database.isInitialized) database.close()
     }
 
@@ -215,7 +215,7 @@ class EnforcementIntegrationTest {
         }
 
         // ...and the websites are NOT unblocked by an extension.
-        assertTrue("Chrome blocklist must survive an extension", status.chrome?.satisfied == true)
+        assertTrue("Chrome blocklist must survive an extension", status.chrome?.storedPolicyVerified == true)
     }
 
     @Test
@@ -253,7 +253,7 @@ class EnforcementIntegrationTest {
     }
 
     @Test
-    fun windingTheClockBackwardsDoesNotGrantASecondAllowance() = runTest {
+    fun changingTheDateDoesNotGrantASecondAllowance() = runTest {
         usage.resume(TargetPackages.INSTAGRAM, clock.wallMs)
         runFor(allowanceMs)
         val day = coordinator.status.value.dayId
@@ -262,17 +262,28 @@ class EnforcementIntegrationTest {
         // Put the phone down first, so the jump itself is the only thing under test.
         usage.pause(TargetPackages.INSTAGRAM, clock.wallMs)
         usage.stop(TargetPackages.INSTAGRAM, clock.wallMs)
+        runFor(1_000)
 
-        // Forward past midnight, then back again -- the classic "free day" attempt.
-        runFor(14 * 60 * 60_000L)
-        clock.wallMs -= 14 * 60 * 60_000L
+        // Set the date forward past midnight while a second of real time passes. The jump
+        // is refused outright, so the accounting day does not move and no unvisited date is
+        // reached; the apps stay suspended until the PIN holder resolves it.
+        clock.wallMs += 14 * 60 * 60_000L
         clock.elapsedMs += 1_000
         coordinator.tick(Trigger.POLL)
 
-        val status = coordinator.status.value
-        assertEquals("back on the exhausted day", day, status.dayId)
-        assertEquals(allowanceMs, status.chargedMs)
+        var status = coordinator.status.value
+        assertEquals("the accounting day did not move", day, status.dayId)
+        assertEquals(0L, status.remainingMs)
         assertTrue("still suspended", status.enforcement.suspendTargets)
+        assertEquals(EnforcementReason.RECOVERY_REQUIRED, status.enforcement.reason)
+
+        // Putting it back does not help either.
+        clock.wallMs -= 14 * 60 * 60_000L
+        clock.elapsedMs += 1_000
+        coordinator.tick(Trigger.POLL)
+        status = coordinator.status.value
+        assertEquals(day, status.dayId)
+        assertTrue(status.enforcement.suspendTargets)
     }
 
     @Test
