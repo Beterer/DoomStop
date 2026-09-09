@@ -53,8 +53,11 @@ acceptance matrix names which one it rests on.
 | Targets installed | `com.instagram.android`, `com.zhiliaoapp.musically`, `com.reddit.frontpage` |
 | Other browsers installed | `org.mozilla.firefox`, `org.torproject.torbrowser` |
 
-**Status: read-only inventory only.** Nothing has been installed on this phone and it has
-not been provisioned. See section 3.
+**Status: not provisioned.** On 2026-09-09 the **debug** build was installed on this phone
+with the owner's consent, and Usage access granted, so that Gate D could be measured on real
+hardware (section 6.1). That is an ordinary app installation: no device-owner provisioning,
+no policy applied, nothing enforced, and `adb uninstall dev.personal.doomstop` removes it.
+The phone has **not** been reset and DoomStop protects nothing on it. See section 3.
 
 **B. Emulator — AVD `doomstop36`**
 
@@ -253,11 +256,59 @@ an older instance of the same class killing a live session — is closed by the 
 contract: `onPause` always precedes `onStop`, so a `STOPPED` arriving while the tracked key
 is `RESUMED` belongs to an older instance and is ignored.
 
+### 6.1 On the phone — Pixel 9, API 37, 2026-09-09
+
+Measured with the **debug** build installed as an ordinary app: real `UsageStatsManager`
+events, the real system clock, the real three target apps, and **no device ownership**, so
+this section covers observation only. Nothing was enforced and no policy was applied.
+
+Charges were read from the ongoing notification, which needs no unlocked screen; on-screen
+durations were bracketed by `date +%s%3N` on the device either side of the launch and the
+Home keystroke, so each figure includes launch and transition latency at both ends.
+
+| Check | Measured | Charged | Error |
+|---|---|---|---|
+| Instagram, short session | 60.19 s | 62 s | +1.8 s |
+| Reddit, short session | 30.27 s | 31 s | +0.7 s |
+| TikTok, then screen off for 40 s | 20.37 s visible | 20 s | −0.4 s, and the dark period cost nothing |
+| Instagram, long continuous session | 599.90 s | 599 s | −0.9 s over ten minutes |
+| Going Home | — | counter froze within 45 s and had not moved 90 s later | — |
+
+The error is under two seconds per session and does not grow with session length, which
+places it in transition latency rather than in the accounting. Its usual sign is toward
+charging, which is the intended direction: an app being animated away is still on screen,
+so it keeps counting until it actually stops.
+
+**Killing the monitor mid-session.** With Reddit open, `am force-stop dev.personal.doomstop`
+killed the process; Reddit stayed on screen a further 60.88 s of a 76.91 s total. On
+relaunch the whole dead window was reconstructed from usage events: **78 s charged**, and
+the history stayed clean rather than latching a false gap. This is F1/F2 on hardware.
+
+The same test also confirms the cost of *not* being provisioned: after `force-stop` there
+were zero service records and nothing restarted the monitor on its own, because a
+force-stopped app receives no broadcasts until something launches it. `setUserControlDisabledPackages`
+is what closes this, and it needs device ownership — which is the argument for that
+readiness line, not a defect in the monitor.
+
+**Deep doze.** Under `dumpsys deviceidle force-idle` the foreground service stayed alive and
+foreground. Power state was restored afterwards (`unforce`, `battery reset`).
+
+**Picture-in-picture applicability.** Read from the installed APKs' manifests with `aapt2`:
+`com.instagram.android` declares `supportsPictureInPicture` on **7** activities and
+`com.zhiliaoapp.musically` on **3**; `com.reddit.frontpage` declares none. Both of the first
+two also set `resizeableActivity=true`. This **corrects an earlier assumption** in this
+report that none of the three offered PiP: for two of them the F6 rule is a live concern,
+not a hypothetical one.
+
 ### Not yet measured
 
-Split-screen and picture-in-picture on real hardware; screen-off and battery-saver
-behaviour over a full night; task-manager stop and restart timing; the direct-boot window
-between `LOCKED_BOOT_COMPLETED` and first unlock; battery impact of the one-second poll.
+Picture-in-picture behaviour itself (declared support is not the same as a measured
+`ACTIVITY_STOPPED` latency); screen-off and battery-saver behaviour over a full night; the
+direct-boot window between `LOCKED_BOOT_COMPLETED` and first unlock; battery impact of the
+one-second poll. Split-screen is **deliberately out of scope for this version** (see the
+acceptance matrix); note that `am start --windowingMode 6`, with or without
+`FLAG_ACTIVITY_LAUNCH_ADJACENT`, does not stage a genuine split on Android 17 — it makes one
+task multi-window and hides the other — so testing it needs the SysUI gesture by hand.
 
 ---
 
@@ -325,11 +376,60 @@ the app. The in-place update kept the existing database and the device-owner sta
 ### 7.3 What the review asked for that is still not done
 
 - **Picture-in-picture on real hardware.** F6's rule is the conservative interim answer, not
-  a measured one. None of the three target apps is believed to offer PiP on Android, but that
-  has not been checked on the phone, and the ten-minute unresolved bound is a judgement call
-  that should be revisited with a hardware measurement of `ACTIVITY_STOPPED` latency.
-- **A signed release.** The build now refuses to produce an unsigned one, but the key itself
-  has to be created by its owner and the in-place update path is still unverified.
+  a measured one, and the ten-minute unresolved bound remains a judgement call that should be
+  revisited with a hardware measurement of `ACTIVITY_STOPPED` latency. An earlier draft of
+  this report guessed that none of the three apps offered PiP; section 6.1 shows that is
+  wrong for two of them, which makes the measurement more important rather than less.
+
+### 7.4 The signed release and the in-place update path
+
+Both were closed on 2026-09-09. The owner created the key themselves; the password did not
+pass through this project's logs, transcripts or source, and `keystore.properties` and
+`*.jks` remain gitignored.
+
+```
+Signer #1 certificate DN:  CN=DoomStop
+Signer #1 key algorithm:   RSA, 4096 bits
+Signer #1 certificate SHA-256:
+  f6bfa1d3380f6636af6b06d0ab23983fb6a7c2a9c15e14966fda8fcd4602c0f1
+Verified using v2 scheme (APK Signature Scheme v2): true
+```
+
+v3 signing is off, which is AGP's default; v2 is sufficient to install and to update, and v3
+would only add key-rotation support later.
+
+The update path was then exercised end to end on a **wiped** emulator, with the
+release-signed APK as the provisioned device owner — the configuration the phone will be in,
+rather than a debug build standing in for it:
+
+| Step | Result |
+|---|---|
+| Release APK provisioned as device owner | pass |
+| Reboot | ownership survived |
+| Setup completed (PIN set through the app's own keypad) | `Protected` |
+| `install -r` of a v2 built with the **same** key, no uninstall | `Success`; `versionCode` 1 → 2 |
+| Data directory | `firstInstallTime` unchanged, `lastUpdateTime` advanced |
+| Device owner after update | intact |
+| `packageUninstallBlocked` after update | intact |
+| Monitor after update, *without* opening the app | restarted itself via `MY_PACKAGE_REPLACED`, notification reposted |
+| App state after update | reports `Protected`, so the PIN and settings survived in the database |
+| `install -r` of a same-version APK signed with a **different** key | refused — `INSTALL_FAILED_UPDATE_INCOMPATIBLE: signatures do not match` |
+| `adb uninstall` while device owner | refused — `DELETE_FAILED_DEVICE_POLICY_MANAGER` |
+
+The last two rows are the reason the key matters: together they mean that losing it leaves a
+factory reset as the only way to change the app on a provisioned phone.
+
+Two incidental findings from that run, neither a defect in this app:
+
+- On a `google_apis_playstore` image, Play services registers an account shortly after boot
+  and `dpm set-device-owner` is then refused with `STATUS_ACCOUNTS_NOT_EMPTY` even though
+  `dumpsys account` reports zero accounts. Provisioning succeeded only after removing
+  `com.android.vending`, `com.google.android.gms` and `com.google.android.gms.supervision`
+  for user 0; they were reinstalled with `cmd package install-existing` afterwards. A real
+  phone taken straight out of a factory reset does not have this problem, because
+  provisioning happens before any account is added.
+- The PIN screen sets `FLAG_SECURE`: `screencap` returns a black frame. That is the intended
+  behaviour and it is worth keeping.
 
 ---
 
@@ -337,12 +437,12 @@ the app. The in-place update kept the existing database and the device-owner sta
 
 | Test | Required result | Evidence | Status |
 |---|---|---|---|
-| Open any target without opening limiter | counting starts automatically | emulator, real `UsageStatsManager` events | **pass** — 21 s charged for ~20 s |
+| Open any target without opening limiter | counting starts automatically | emulator + **phone**, real `UsageStatsManager` events | **pass** — 21 s for ~20 s on the emulator; on the phone 62 s for 60.19 s, 31 s for 30.27 s, and 599 s for 599.90 s |
 | Instagram 20 s + Reddit 20 s + TikTok 20 s | shared allowance exhausted, all three suspended | emulator, real suspension read back | **pass** |
-| Home / unrelated app / locked screen | no ongoing debit | emulator + coordinator | **pass** |
+| Home / unrelated app / locked screen | no ongoing debit | emulator + coordinator + **phone** | **pass** — on the phone the counter froze within 45 s of Home and had not moved 90 s later; 40 s with the screen off cost nothing |
 | Rapid switching and activity transitions | no duplicated or lost intervals | engine + coordinator | **pass** |
-| Split-screen | visible target charged once | engine (multi-resume) + emulator | **pass** |
-| Picture-in-picture | still-visible target keeps being charged | engine only | **partial** — metering no longer stops at 90 s and ends in an explicit unresolved state; **not exercised on hardware**, and whether the three apps offer PiP at all is unchecked |
+| Split-screen | visible target charged once | engine (multi-resume) only | **out of scope for this version** — descoped by the owner on 2026-09-09. The engine charges one second per second for any number of simultaneously visible targets, but no genuine split was ever staged on a device; adb cannot create one (section 6.1) |
+| Picture-in-picture | still-visible target keeps being charged | engine + manifest inspection on the phone | **partial** — metering no longer stops at 90 s and ends in an explicit unresolved state; **not exercised on hardware**. Instagram and TikTok do declare PiP support, so this is a real path, not a hypothetical one |
 | Expiry while app open | unusable; cut-off ≤ 2 s | emulator | **pass — 683 ms** |
 | Notifications / recents / deep links after expiry | no access | emulator (launch only) | **partial** — launch blocked; specific routes not walked |
 | Correct PIN | exactly one extension, sites still blocked | emulator + UI flow | **pass** |
@@ -353,9 +453,9 @@ the app. The in-place update kept the existing database and the device-owner sta
 | Manual date change backward | no repeatable reset exploit | coordinator + emulator | **pass** — refused; the day stays exhausted |
 | Timezone change on the device | accounting day unaffected | source only | **not verified** — the accounting zone is captured at setup and never follows the device, but this has not been exercised |
 | Reboot with exhausted/remaining allowance | balance retained, no fresh grant | emulator + coordinator | **pass** — including the window still open at shutdown |
-| Process death while target open | reconcile and resume | coordinator (real database, rebuilt coordinator) | **pass** — this is now a restart test, not only an engine test |
+| Process death while target open | reconcile and resume | coordinator (real database, rebuilt coordinator) + **phone** | **pass** — on the phone, 60.88 s of scrolling with the monitor force-stopped was reconstructed in full: 78 s charged for 76.91 s on screen, history clean |
 | Usage permission revoked | unhealthy state, suspension, recovery latched | coordinator | **pass** — and the latch survives a restart |
-| Force-stop / clear-data / uninstall controller | settings bypass prevented | emulator (uninstall) | **partial** — uninstall refused and user-control disabled for this package only; force-stop and clear-data not exercised by hand |
+| Force-stop / clear-data / uninstall controller | settings bypass prevented | emulator (uninstall, release build) + phone (force-stop) | **partial** — `adb uninstall` refused with `DELETE_FAILED_DEVICE_POLICY_MANAGER` against the provisioned release build. Force-stop was exercised on the **unprovisioned** phone, where it is allowed: it stopped metering until the app was next opened, and the whole dead window was then reconstructed and charged. Force-stop against a *provisioned* device, and clear-data, are still not exercised |
 | Chrome normal / incognito / mobile / old / short URLs | blocked permanently | emulator, real Chrome | **pass** |
 | Chrome policy after reboot / update / reinstall | remains effective or reapplied | — | **not verified** |
 | Target tab open before initial policy | setup closes/restarts; no retroactive claim | — | **not verified**; documented in setup |
@@ -363,8 +463,8 @@ the app. The in-place update kept the existing database and the device-owner sta
 | Install unrelated app | installs and runs without PIN | emulator | **pass** |
 | Reinstall target after exhaustion | remains blocked, balance not reset | emulator | **pass** |
 | Calls, SMS, maps, camera, banking, ordinary Chrome | normal | emulator (browsing only) | **partial** — telephony not testable on this emulator |
-| Battery saver and overnight idle | recovers; no accidental reset; battery recorded | — | **not verified** |
-| Signed in-place update | owner status, PIN, usage, policies preserved | — | **not verified** — needs the release key |
+| Battery saver and overnight idle | recovers; no accidental reset; battery recorded | phone, forced deep idle | **partial** — the foreground service survived `deviceidle force-idle`; a full night and the battery cost of the one-second poll are still unmeasured |
+| Signed in-place update | owner status, PIN, usage, policies preserved | emulator, release-signed build provisioned as device owner | **pass** — see section 7.4; ownership, uninstall blocking, the database and the self-restarting monitor all survived, and a differently-signed APK was refused |
 | Database upgrade | balance and outstanding recovery survive | coordinator (`MigrationTest`) | **pass** — an `UNCERTAIN` history stays `UNCERTAIN` across the upgrade |
 | PIN-authorized restore, every step succeeding | previous values restored, only what this app changed | coordinator, injected policy | **pass** |
 | PIN-authorized restore, a step failing | ownership kept, failure named, retry works | coordinator, injected policy | **pass** |
@@ -374,9 +474,13 @@ the app. The in-place update kept the existing database and the device-owner sta
 
 ## 9. Residual gaps, stated plainly
 
-1. **The phone is not protected.** Everything above is emulator work. Until the Pixel is
-   reset and provisioned, DoomStop enforces nothing on it.
-2. **One API level of drift.** Verification ran on API 36; the phone is API 37.
+1. **The phone is not protected.** Gate D observation now has real measurements from the
+   Pixel (section 6.1), but every *enforcement* result above is emulator work. Until the
+   Pixel is reset and provisioned, DoomStop enforces nothing on it: the build installed there
+   is an ordinary app that counts time and applies no policy.
+2. **One API level of drift, narrowed but not closed.** The enforcement gates ran on API 36;
+   the phone is API 37. Metering, force-stop reconciliation and doze survival have now been
+   measured on API 37 hardware; suspension, Chrome policy and provisioning have not.
 3. **The 366 ms browser window is real.** A blocked browser can be launched in that window.
 4. **Browser coverage is a fixed list.** Anything not on it, including WebView-based apps and
    in-app browsers, is not blocked. This is not Internet filtering.
@@ -389,10 +493,13 @@ the app. The in-place update kept the existing database and the device-owner sta
    by itself.
 8. **Anyone with recovery or firmware access can wipe the device**, and that is the intended
    escape hatch if the PIN is lost.
-9. **There is no signed release yet.** The build refuses to produce an unsigned one, but the
-   key has to be created by its owner; the password must not pass through a build log or a
-   transcript, and the in-place update path stays unverified until it exists.
-10. **Picture-in-picture is unmeasured.** Section 7.3 states the interim rule and why it is
+9. **The signing key is now a single point of failure.** A signed release exists and the
+    in-place update path is verified (section 7.4). The consequence is that the key is
+    load-bearing: a differently-signed APK is refused, and uninstall is refused while the app
+    is device owner, so losing the key leaves a factory reset as the only way to change the
+    app on a provisioned phone. It must be backed up outside this machine.
+10. **Picture-in-picture is unmeasured, and it is not hypothetical.** Instagram and TikTok
+    both declare PiP support on the phone. Section 7.3 states the interim rule and why it is
     conservative rather than correct.
 11. **Accounting commits on a thirty-second lag.** Enforcement uses the live estimate, so
     cut-off is unaffected, but a usage event delivered more than thirty seconds late is

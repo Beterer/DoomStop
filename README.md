@@ -26,7 +26,8 @@ Built to [`docs/social-limit-implementation-plan.md`](docs/social-limit-implemen
 | Gate A — device-owner provisioning | See `docs/test-report.md` |
 | Gate B — actual app suspension | See `docs/test-report.md` |
 | Gate C — Chrome policy without an enterprise backend | See `docs/test-report.md` |
-| Gate D — usage observation and background survival | See `docs/test-report.md` |
+| Gate D — usage observation and background survival | Measured on the Pixel 9 itself; see `docs/test-report.md` §6.1 |
+| Signed release and in-place update | Verified end to end; see `docs/test-report.md` §7.4 |
 | Code review of 2026-09-08 (findings F1-F8) | Fixed and covered by regression tests |
 | Provisioning on the real Pixel 9 | **Blocked** — requires a factory reset, not yet authorised |
 

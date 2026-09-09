@@ -189,7 +189,13 @@ those as well; that is your decision to make, not the app's.
 
 Build a release signed with the **same key** and `adb install -r`. Owner status, PIN,
 balance and applied policies all survive, because they live in the app's database and in
-platform policy rather than in the process.
+platform policy rather than in the process. This was verified against a provisioned,
+release-signed build rather than assumed — including that the monitor restarts itself after
+the update without the app being opened. See `docs/test-report.md` §7.4.
+
+An APK signed with a *different* key is refused (`INSTALL_FAILED_UPDATE_INCOMPATIBLE`), and
+uninstalling is refused while the app is device owner, so there is no way round a lost key
+except a factory reset.
 
 Losing the signing key means no future version can be installed over the provisioned app,
 and recovering from that needs a factory reset. Back the key up somewhere outside this
