@@ -33,8 +33,9 @@ android {
         // so the minimum matches the device and avoids dead compatibility branches.
         minSdk = 34
         targetSdk = 37
-        versionCode = 1
-        versionName = "0.1.0"
+        // 2 was the Gate D update-path build, installed on the phone but never committed.
+        versionCode = 3
+        versionName = "0.2.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         // Fixtures deliberately leave policy applied so a person can look at the result.

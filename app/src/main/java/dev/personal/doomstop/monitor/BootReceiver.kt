@@ -52,7 +52,10 @@ class BootReceiver : BroadcastReceiver() {
             return
         }
         // Re-assert exactly what was in force at shutdown, erring toward suspended.
-        val report = policy.applyEnforcement(suspendTargets = marker.targetsSuspended)
+        val report = policy.applyEnforcement(
+            suspendTargets = marker.targetsSuspended,
+            suspendYouTube = marker.youtubeSuspended,
+        )
         Log.i(TAG, "locked boot: suspension re-applied, allApplied=${report.allApplied}")
     }
 

@@ -101,6 +101,38 @@ The app reports "Protected" only when every line above is green.
 
 Optionally verify Chrome independently: open `chrome://policy` and look for `URLBlocklist`.
 
+### The YouTube Shorts guard
+
+From 0.2.0 on, DoomStop closes the YouTube Shorts player whenever it opens, and leaves
+ordinary YouTube videos alone. It does this with an accessibility service, which Android
+only lets a person switch on:
+
+1. Setup & diagnostics → **Switch on the Shorts guard**, or Settings → Accessibility.
+2. Open **DoomStop Shorts guard** and switch it on. Android warns that the service can see
+   the screen and act on it. The service only receives events from the YouTube app, and it
+   only checks whether the Shorts player is showing. It reads no titles, comments or typing.
+3. The readiness line **YouTube Shorts guard running** turns green.
+
+From a computer, the same switch is:
+
+```powershell
+adb shell settings put secure enabled_accessibility_services dev.personal.doomstop/dev.personal.doomstop.monitor.ShortsGuardService
+```
+
+That command replaces the whole list, so if another accessibility service is on, read the
+list first with `settings get` and add this one with a `:` separator.
+
+**While the guard is off, the whole YouTube app is suspended.** That rule is what makes the
+guard worth having: switching it off does not give Shorts back, it takes YouTube away. It
+starts working the moment enforcement starts, so right after installing 0.2.0 YouTube is
+paused until the guard is switched on.
+
+Once an accessibility service is on, YouTube offers **"Turn on accessibility controls for the
+video player?"** That is YouTube's own prompt; **Dismiss** is fine.
+
+The readiness line is not part of "Protected", because with the guard off YouTube is
+suspended and Shorts are unavailable either way. The line says which of the two is happening.
+
 ### Defaults
 
 30 minutes a day and 10 minutes per extension are **proposed defaults, not decisions you
@@ -123,6 +155,10 @@ expires at the next reset.
   is needed for each one, and repeated taps cannot duplicate a grant.
 - The three websites stay blocked in Chrome at all times, including while time remains and
   including in incognito.
+- YouTube works as normal, and YouTube time is not counted, but opening Shorts gets you sent
+  straight back, with a "Shorts blocked by DoomStop" message. That takes about a third of a
+  second, so a frame of the Short may show. In Chrome, a Shorts link is blocked, but a Short
+  reached by tapping around inside YouTube's website plays: that gap is known and accepted.
 - Installing apps needs no PIN. Calls, SMS, maps, camera, banking and ordinary browsing are
   untouched.
 
@@ -201,6 +237,18 @@ Losing the signing key means no future version can be installed over the provisi
 and recovering from that needs a factory reset. Back the key up somewhere outside this
 repository.
 
+The Shorts guard stays switched on across an update. Android re-binds it a moment after the
+new version starts, and DoomStop waits up to 15 seconds for that before treating the guard as
+off, so an update does not pause YouTube.
+
+**After a big YouTube update, check that the guard still recognises Shorts.** Open a Short. If
+it keeps playing, YouTube has renamed the screen elements the guard looks for, which is the
+failure mode the guard cannot report by itself. The fix is to re-measure them: with a Short
+playing, run `adb shell uiautomator dump`, and compare the `reel_*` resource IDs with
+`SHORTS_PLAYER_VIEW_IDS` in `config/ShortsGuard.kt`. Then take the same dump on the home feed
+and in the ordinary player, and use only IDs that appear on the Shorts screen alone.
+`ShortsGuardTest` holds the three measured ID lists and fails if a marker is not unique.
+
 ### Creating the release key
 
 Run this yourself — the password must not pass through a transcript or a build log:
@@ -255,6 +303,9 @@ worth understanding:
   allowance. Re-grant usage access and start the monitor.
 - **"Maintenance — not enforcing."** A restore was started and did not finish. Nothing is
   being enforced. Retry it or cancel it from Settings (section 6).
+- **YouTube says it is paused, although no allowance applies to it.** The Shorts guard is not
+  running. Switch on DoomStop Shorts guard under Settings → Accessibility and YouTube comes
+  back within a second.
 - **"Needs attention — apps paused."** A stretch of time could not be reconstructed, so the
   app refuses to guess. This is **latched**: it does not clear itself when the problem goes
   away, because a later successful reading says nothing about the interval that was missed.

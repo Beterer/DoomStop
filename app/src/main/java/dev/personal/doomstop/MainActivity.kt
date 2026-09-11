@@ -123,6 +123,7 @@ private fun DoomStopApp(viewModel: LimiterViewModel, onSecureWindow: (Boolean) -
                     status = status,
                     onGrantUsageAccess = { context.startActivity(AppPermissions.usageAccessSettingsIntent(context)) },
                     onAllowExactAlarms = { context.startActivity(AppPermissions.exactAlarmSettingsIntent(context)) },
+                    onOpenAccessibilitySettings = { context.startActivity(AppPermissions.accessibilitySettingsIntent()) },
                     onStartMonitor = viewModel::startMonitor,
                     onSetPin = { viewModel.show(Screen.ChangePin) },
                     onRefresh = viewModel::refresh,

@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Events from YouTube only. Window content is retrievable so the guard can ask whether one
+  of the Shorts player's view IDs is on screen; flagReportViewIds is what makes those IDs
+  visible to the lookup. Nothing else about the screen is read.
+-->
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:description="@string/shorts_guard_description"
+    android:packageNames="com.google.android.youtube"
+    android:accessibilityEventTypes="typeWindowStateChanged|typeWindowContentChanged"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:accessibilityFlags="flagReportViewIds"
+    android:canRetrieveWindowContent="true"
+    android:notificationTimeout="200"
+    android:isAccessibilityTool="false" />

@@ -71,6 +71,12 @@ object AppPermissions {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
 
+    /** Where the Shorts guard is switched on. There is no per-service deep link. */
+    fun accessibilitySettingsIntent(): Intent =
+        Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+
     fun isScreenInteractive(context: Context): Boolean =
         context.getSystemService(PowerManager::class.java)?.isInteractive == true
 

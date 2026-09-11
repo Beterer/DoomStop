@@ -39,6 +39,9 @@
         <!-- Chrome: policy target, never suspended -->
         <package android:name="com.android.chrome" />
 
+        <!-- YouTube: watched by the Shorts guard, suspended only while the guard is off -->
+        <package android:name="com.google.android.youtube" />
+
         <!-- Hardcoded alternative browsers -->
         <package android:name="org.mozilla.firefox" />
         <package android:name="org.mozilla.firefox_beta" />
@@ -156,6 +159,25 @@
         <receiver
             android:name=".monitor.DeadlineReceiver"
             android:exported="false" />
+
+        <!--
+          YouTube Shorts guard. BIND_ACCESSIBILITY_SERVICE means only the system can bind it,
+          and the configuration limits it to events from the YouTube package. It has to be
+          switched on by hand under Settings > Accessibility; while it is off, the
+          coordinator suspends the whole YouTube app.
+        -->
+        <service
+            android:name=".monitor.ShortsGuardService"
+            android:exported="false"
+            android:label="@string/shorts_guard_label"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/shorts_guard_service" />
+        </service>
 
     </application>
 

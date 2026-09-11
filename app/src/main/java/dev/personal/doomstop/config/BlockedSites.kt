@@ -21,6 +21,15 @@ import org.json.JSONArray
  *
  * The content-delivery domains supplement direct-site blocking. They are not, and are not
  * claimed to be, comprehensive embedded-content filtering.
+ *
+ * [PATH_FILTERS] use the optional path part of the same grammar: `youtube.com/shorts`
+ * blocks the Shorts feed on every YouTube subdomain while `/watch` stays available. A path
+ * is a prefix match.
+ *
+ * Measured limit of a path filter, on the phone with Chrome on 2026-09-11: opening a Shorts
+ * URL is blocked, but tapping through to a Short inside YouTube's own site is NOT. The site
+ * changes pages without a new page load, and Chrome only consults the blocklist on a load.
+ * The owner accepted that gap rather than widen the Shorts guard to read Chrome's address bar.
  */
 object BlockedSites {
 
@@ -39,6 +48,15 @@ object BlockedSites {
         "redditstatic.com",
     )
 
+    /** Host-plus-path filters: part of a site blocked, the rest of it left alone. */
+    val PATH_FILTERS: List<String> = listOf(
+        // YouTube Shorts; ordinary videos under /watch are unaffected.
+        "youtube.com/shorts",
+    )
+
+    /** Everything written into the blocklist, in order. */
+    val FILTERS: List<String> = HOSTS + PATH_FILTERS
+
     /** Chrome package whose managed configuration carries the blocklist. */
     const val CHROME_PACKAGE = "com.android.chrome"
 
@@ -52,15 +70,18 @@ object BlockedSites {
     const val KEY_URL_BLOCKLIST = "URLBlocklist"
 
     /** The exact String value written into Chrome's application restrictions. */
-    fun blocklistJson(): String = JSONArray(HOSTS).toString()
+    fun blocklistJson(): String = JSONArray(FILTERS).toString()
 
-    /** True when a managed value already contains every required host. */
+    /**
+     * True when a managed value already contains every required filter. A value written by
+     * an older build, without the newer filters, is therefore not satisfied and is rewritten.
+     */
     fun isSatisfiedBy(current: String?): Boolean {
         if (current.isNullOrBlank()) return false
         val present = runCatching {
             val array = JSONArray(current)
             (0 until array.length()).mapTo(mutableSetOf()) { array.optString(it) }
         }.getOrElse { return false }
-        return HOSTS.all { it in present }
+        return FILTERS.all { it in present }
     }
 }

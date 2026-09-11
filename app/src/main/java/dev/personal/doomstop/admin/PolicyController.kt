@@ -9,6 +9,7 @@ import android.os.UserManager
 import android.util.Log
 import dev.personal.doomstop.config.BlockedBrowsers
 import dev.personal.doomstop.config.BlockedSites
+import dev.personal.doomstop.config.ShortsGuard
 import dev.personal.doomstop.config.TargetPackages
 
 /** What happened to one package when suspension was applied and then verified. */
@@ -131,11 +132,13 @@ class PolicyController(private val context: Context) : DevicePolicyGateway {
      * Apply the whole enforcement picture in one pass: targets follow [suspendTargets],
      * and the hardcoded browsers are ALWAYS suspended regardless of allowance, because
      * they exist to route around the permanent Chrome policy rather than to consume time.
+     * YouTube follows [suspendYouTube], which is true only while the Shorts guard is off.
      */
-    override fun applyEnforcement(suspendTargets: Boolean): SuspensionReport {
+    override fun applyEnforcement(suspendTargets: Boolean, suspendYouTube: Boolean): SuspensionReport {
         val outcomes = buildList {
             addAll(setSuspended(TargetPackages.ALL, suspendTargets))
             addAll(setSuspended(BlockedBrowsers.ALL, true))
+            addAll(setSuspended(setOf(ShortsGuard.YOUTUBE_PACKAGE), suspendYouTube))
         }
         return SuspensionReport(outcomes)
     }
@@ -148,7 +151,8 @@ class PolicyController(private val context: Context) : DevicePolicyGateway {
         SuspensionReport(setSuspended(packages, false))
 
     /** Every package this app is capable of suspending, for reporting and for tests. */
-    override fun manageablePackages(): Set<String> = TargetPackages.ALL + BlockedBrowsers.ALL
+    override fun manageablePackages(): Set<String> =
+        TargetPackages.ALL + BlockedBrowsers.ALL + ShortsGuard.YOUTUBE_PACKAGE
 
     /** Suspension state as the platform reports it. Null when it will not say. */
     override fun readSuspended(packageName: String): Boolean? = if (!isInstalled(packageName)) {

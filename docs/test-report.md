@@ -1,8 +1,9 @@
 # DoomStop — test report
 
-Prepared 2026-09-08, revised 2026-09-09 after the code review in section 7. This records
-what was actually run, on what, and what has not been verified. Where a result is a
-measurement it is the measured number, not a target.
+Prepared 2026-09-08, revised 2026-09-09 after the code review in section 7, and 2026-09-11
+for the phone's provisioning and the YouTube Shorts guard (section 10). This records what
+was actually run, on what, and what has not been verified. Where a result is a measurement
+it is the measured number, not a target.
 
 ### How to read a "pass" here
 
@@ -16,7 +17,9 @@ acceptance matrix names which one it rests on.
 | **emulator** | An instrumented test against a genuinely provisioned device owner on AVD `doomstop36`, with stub packages standing in for the three apps. | Hardware behaviour, one API level up, with the real apps. |
 | **device** | Run on the Pixel 9. | — |
 
-**No row in this report is class "device".** The phone has not been provisioned.
+Rows of class **device** were run on the Pixel 9 after it was reset and provisioned on
+2026-09-09 (section 10). Earlier phone rows, marked "phone", come from the unprovisioned
+Gate D run in section 6.1.
 
 ---
 
@@ -53,11 +56,13 @@ acceptance matrix names which one it rests on.
 | Targets installed | `com.instagram.android`, `com.zhiliaoapp.musically`, `com.reddit.frontpage` |
 | Other browsers installed | `org.mozilla.firefox`, `org.torproject.torbrowser` |
 
-**Status: not provisioned.** On 2026-09-09 the **debug** build was installed on this phone
-with the owner's consent, and Usage access granted, so that Gate D could be measured on real
-hardware (section 6.1). That is an ordinary app installation: no device-owner provisioning,
-no policy applied, nothing enforced, and `adb uninstall dev.personal.doomstop` removes it.
-The phone has **not** been reset and DoomStop protects nothing on it. See section 3.
+**Status: provisioned on 2026-09-09** (section 10.1). The table above is the inventory taken
+before the reset. Afterwards the phone ran build `CP2A.260805.005` with the 2026-08-05
+security patch, and the two other browsers were gone.
+
+Before the reset, the **debug** build had been installed as an ordinary app, with the
+owner's consent and Usage access granted, so that Gate D could be measured on real hardware
+(section 6.1). That installation enforced nothing.
 
 **B. Emulator — AVD `doomstop36`**
 
@@ -86,16 +91,17 @@ in the scratch directory, are never distributed, and were never installed on the
 
 | Suite | Count | Result |
 |---|---|---|
-| Unit (`testDebugUnitTest`), no device — class **engine** | 86 | all pass |
-| Instrumented (`connectedDebugAndroidTest`) — classes **coordinator** and **emulator** | 55 | all pass, none skipped |
-| Android lint (`lintDebug`, `lintRelease`) | — | clean |
+| Unit (`testDebugUnitTest`), no device — class **engine** | 98 | all pass |
+| Instrumented (`connectedDebugAndroidTest`) — classes **coordinator** and **emulator** | 56 | compile; **not re-run for 0.2.0**. The last run, 55 tests, all passed, none skipped |
+| Android lint (`lintDebug`, `lintRelease`) | — | no errors; 9 warnings, every one a notice that a newer dependency version exists |
 | Release build without a key | — | **fails**, by design: `verifyReleaseSigning` refuses to produce an uninstallable artifact |
 | Release build with `-PallowUnsignedRelease=true` | — | `app-release-unsigned.apk`, not debuggable, not test-only, `allowBackup=false` |
 
 Unit tests cover budget arithmetic, midnight splitting, a DST day that skips local midnight,
 rollover idempotence, boot/clock/monotonic anomalies, latched recovery, the settled
 accounting window, observer serialization and visibility semantics, and PIN throttling
-against both clocks.
+against both clocks. `config/ShortsGuardTest` checks Shorts detection against the view IDs
+measured on the phone, and the guard-off rule including its grace period (section 10.2).
 
 Instrumented tests split into three files:
 
@@ -469,18 +475,26 @@ Two incidental findings from that run, neither a defect in this app:
 | PIN-authorized restore, every step succeeding | previous values restored, only what this app changed | coordinator, injected policy | **pass** |
 | PIN-authorized restore, a step failing | ownership kept, failure named, retry works | coordinator, injected policy | **pass** |
 | Releasing device ownership | app becomes removable | coordinator, injected policy | **partial** — the staged path and its refusal-to-proceed are tested; the real `clearDeviceOwnerApp` has not been run |
+| Provisioning the phone | owner set, uninstall blocked, sites blocked in Chrome | **device** | **pass** — section 10.1; four sites blocked end to end with an unblocked control |
+| Shorts inside the YouTube app | player closed, ordinary videos untouched | **device** | **pass** — 245 to 361 ms from tap to Back over three runs; 20 s of an ordinary video untouched. Best-effort by construction (section 10.2) |
+| Shorts guard switched off | whole YouTube app suspended | **device** | **pass** — 1.8 s; released 21 ms after switching back on |
+| In-place update with the guard on | YouTube not paused by the update | **device** | **pass** — 25 samples across the update, none suspended |
+| Shorts in Chrome | blocked | **device** | **partial** — a Shorts address is blocked; a Short reached inside YouTube's own site plays. Accepted by the owner |
 
 ---
 
 ## 9. Residual gaps, stated plainly
 
-1. **The phone is not protected.** Gate D observation now has real measurements from the
-   Pixel (section 6.1), but every *enforcement* result above is emulator work. Until the
-   Pixel is reset and provisioned, DoomStop enforces nothing on it: the build installed there
-   is an ordinary app that counts time and applies no policy.
-2. **One API level of drift, narrowed but not closed.** The enforcement gates ran on API 36;
-   the phone is API 37. Metering, force-stop reconciliation and doze survival have now been
-   measured on API 37 hardware; suspension, Chrome policy and provisioning have not.
+1. **The allowance has not yet been seen running out on the phone.** The phone is provisioned
+   (section 10.1): ownership, uninstall blocking and the Chrome blocklist are read back from
+   the platform, and Chrome was checked end to end. Package suspension is measured there too,
+   through the Shorts-guard rule on YouTube. But no target was installed at provisioning, so
+   the allowance being used up and suspending a real target has only been observed on the
+   emulator.
+2. **One API level of drift, now mostly closed.** The enforcement gates ran on API 36; the
+   phone is API 37. Metering, force-stop reconciliation, doze survival, provisioning, Chrome
+   policy and package suspension now have measurements on API 37 hardware. The allowance
+   running out is the path still measured only on API 36.
 3. **The 366 ms browser window is real.** A blocked browser can be launched in that window.
 4. **Browser coverage is a fixed list.** Anything not on it, including WebView-based apps and
    in-app browsers, is not blocked. This is not Internet filtering.
@@ -510,3 +524,119 @@ Two incidental findings from that run, neither a defect in this app:
     of refusing a clock jump outright. With automatic time on it should not happen; when it
     does, the acknowledgement screen names the reason and the range, and adopting the new
     clock is an authorized act because the anchor decides which day is current.
+13. **The Shorts guard is best-effort.** It keys on YouTube's own view IDs, measured on
+    YouTube 21.36.45. An update that renames them stops detection without any error. The
+    firm part is the rule that suspends YouTube while the guard is not running, and that rule
+    cannot notice a guard that runs but no longer recognises Shorts. A patched or differently
+    packaged YouTube client is not watched at all.
+14. **Shorts in Chrome are only partly blocked.** A Shorts address is blocked, but YouTube's
+    site changes pages without a new page load, Chrome only checks its blocklist on a load,
+    and a Short reached by tapping around inside the site plays. Closing this would have
+    meant the guard reading Chrome's address bar. The owner chose to accept the gap on
+    2026-09-11.
+
+---
+
+## 10. On the provisioned phone
+
+### 10.1 Provisioning, 2026-09-09
+
+The owner reset the phone and completed the setup wizard as a new device. No backup was
+restored (`dumpsys backup`: no ancestral packages). The owner then removed the Google account.
+The release-signed 0.1.1 (`versionCode` 2, the update-path build from section 7.4) was
+installed and made device owner:
+
+```
+adb shell dpm set-device-owner dev.personal.doomstop/.admin.LimiterAdminReceiver
+```
+
+This succeeded **after** the setup wizard had finished. The precondition that actually
+applied was that no account existed at the moment of the call. Accounts can be added again
+afterwards without affecting ownership.
+
+The owner granted Usage access, the trusted person set the PIN on the phone, and **Finish
+setup and start enforcing** turned the status to "Protected". Read back from the platform
+rather than from the app:
+
+| Check | Result |
+|---|---|
+| Device owner | `isOrganizationOwnedDevice=true`, `testOnlyAdmin=false` |
+| Uninstall blocked | `packageUninstallBlocked` → `BooleanPolicyValue { mValue= true }`, per-admin and resolved |
+| Chrome blocklist | `applicationRestrictions` on `com.android.chrome`, the nine hosts |
+| Effective user restrictions | `no_add_private_profile`, `no_add_managed_profile`, `no_add_clone_profile`: the platform's own device-owner defaults. None of the four this app manages |
+| USB debugging | `adb_enabled=1` |
+
+Chrome was checked end to end, because the stored value alone proves nothing (section 5).
+Its first run said "Your browser is managed by your organisation". `www.instagram.com`,
+`www.reddit.com`, `redd.it` and `www.tiktok.com` all showed "Your organisation doesn't allow
+you to view this site", and `www.wikipedia.org` loaded as a control.
+
+Two things in the policy dump look alarming and are not, recorded so the next reader is
+not misled:
+
+- `UserRestrictionPolicyKey userRestriction_no_factory_reset` is listed, but its per-admin
+  value is `null`, it is absent from the effective restrictions, and this app has no code
+  path that sets it. Factory reset stays available, as intended.
+- The Chrome bundle shows `Resolved Policy (MostRecent): null` while Chrome enforces it. The
+  per-admin `BundlePolicyValue` is the one that matters.
+
+Two observations about the phone rather than the app:
+
+- No target was installed at provisioning, so target suspension had nothing to act on.
+  TikTok has since been installed.
+- `bmgr` reports "Backup Manager is not activated for user 0". Device-owner provisioning
+  leaves the backup service off unless the device owner enables it, and this app never
+  does, so **the phone is not being backed up**.
+
+### 10.2 The YouTube Shorts guard, 2026-09-11
+
+YouTube 21.36.45, Chrome 152.0.7977.83, DoomStop 0.2.0 (`versionCode` 3).
+
+**Choosing the markers.** `uiautomator dump`, which reads the same accessibility tree as the
+guard, was taken on three screens: a Short playing, the home feed, and the ordinary player.
+Only view IDs present on the Shorts screen and absent from both others were kept:
+`reel_watch_player`, `reel_recycler`, `reel_watch_fragment_root`,
+`reel_player_page_container`. `reel_time_bar` was rejected, because despite the name it
+appears on all three. The three ID lists are fixtures in `ShortsGuardTest`. No screen text
+was kept.
+
+The guard was switched on and off with `settings put secure enabled_accessibility_services`.
+The Settings screen path was not exercised. Timings run from the `input tap` or `settings put`
+log line to the guard's or the policy engine's log line.
+
+| Step | Result |
+|---|---|
+| 0.2.0 installed, guard never switched on | YouTube read back `suspended=true` 6 s later |
+| Guard switched on | connected at 21:58:36.855; YouTube released 80 ms later |
+| Shorts tab in the app | Back after **361 ms** |
+| A Short tapped on the home-feed shelf | Back after **283 ms** |
+| An ordinary video, 20 s | no guard action; `watch_player` / `player_view` on screen |
+| Guard switched off | unbound at 22:02:39.990; YouTube suspended **1.76 s** later |
+| Guard switched on again | YouTube released **21 ms** after it connected |
+| Chrome, `youtube.com/shorts/…` opened as a link | "This page is blocked" |
+| Chrome, `m.youtube.com/watch?v=…` | plays |
+| Chrome, Shorts tab inside `m.youtube.com` | **not blocked**: reached `/shorts/…` by in-page navigation and played |
+
+The stored blocklist reads `"youtube.com\/shorts"`: Android's `org.json` escapes `/`, and
+Chrome parses it correctly, as the blocked link shows.
+
+The rows above were measured on a build made before the commit. The committed build differs
+only in comments and one sentence of on-screen text. It was then installed over it with the
+guard on, and checked again:
+
+| Step | Result |
+|---|---|
+| In-place update, guard on | YouTube polled 25 times across the update, never suspended; the guard re-connected 200 ms after the monitor restarted |
+| Shorts tab in the app | Back after **245 ms** |
+| Ownership, guard switch, USB debugging after the update | intact |
+
+Released APK: SHA-256 `A57B48C524D54B0D0EF391E50D15D9F2A0C5D5DFA7C64217EEA242C9817040B0`,
+signer certificate `f6bfa1d3…c0f1` as in section 7.4.
+
+Once an accessibility service is on, YouTube offers "Turn on accessibility controls for the
+video player?". That is YouTube's prompt, not this app's.
+
+**Not measured:** the Back-then-Home escalation, which no run needed; a Short opened from
+another app's link or a notification; a reboot, including the guard re-binding within the
+15-second grace; force-stopping DoomStop with the guard on; switching the guard through the
+Settings screen; and the battery cost of the YouTube event stream.

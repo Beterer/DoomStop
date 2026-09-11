@@ -13,4 +13,9 @@
     <string name="notification_counting">Counting now</string>
     <string name="notification_idle">Not counting · %1$s allowance today</string>
     <string name="notification_action_open">Open</string>
+
+    <!-- YouTube Shorts guard -->
+    <string name="shorts_guard_label">DoomStop Shorts guard</string>
+    <string name="shorts_guard_description">Closes the YouTube Shorts player whenever it opens. Ordinary YouTube videos keep working. It only looks at the YouTube app, and only checks whether the Shorts player is on screen; it does not read titles, comments or anything you type. While this is switched off, DoomStop suspends the whole YouTube app.</string>
+    <string name="shorts_blocked">Shorts blocked by DoomStop</string>
 </resources>

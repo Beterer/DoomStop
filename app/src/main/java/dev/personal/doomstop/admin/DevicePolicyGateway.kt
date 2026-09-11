@@ -19,7 +19,12 @@ interface DevicePolicyGateway {
 
     // -- package suspension ---------------------------------------------------------------
 
-    fun applyEnforcement(suspendTargets: Boolean): SuspensionReport
+    /**
+     * [suspendTargets] follows the allowance; [suspendYouTube] follows the Shorts-guard
+     * rule. Both are explicit on purpose: a caller that forgot the second one would
+     * silently release YouTube.
+     */
+    fun applyEnforcement(suspendTargets: Boolean, suspendYouTube: Boolean): SuspensionReport
     fun release(packages: Set<String>): SuspensionReport
     fun manageablePackages(): Set<String>
     fun readSuspended(packageName: String): Boolean?

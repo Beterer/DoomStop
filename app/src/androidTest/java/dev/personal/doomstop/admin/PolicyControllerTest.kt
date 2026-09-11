@@ -5,6 +5,7 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import dev.personal.doomstop.config.BlockedBrowsers
 import dev.personal.doomstop.config.BlockedSites
+import dev.personal.doomstop.config.ShortsGuard
 import dev.personal.doomstop.config.TargetPackages
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -53,14 +54,14 @@ class PolicyControllerTest {
         val installed = policy.installedTargets()
         assumeTrue("no target packages installed to suspend", installed.isNotEmpty())
 
-        val suspended = policy.applyEnforcement(suspendTargets = true)
+        val suspended = policy.applyEnforcement(suspendTargets = true, suspendYouTube = false)
         assertTrue("failures: ${suspended.failures.map { it.packageName to it.error }}", suspended.allApplied)
         for (packageName in installed) {
             val outcome = suspended.outcomes.first { it.packageName == packageName }
             assertEquals("$packageName should read back as suspended", true, outcome.actualSuspended)
         }
 
-        val released = policy.applyEnforcement(suspendTargets = false)
+        val released = policy.applyEnforcement(suspendTargets = false, suspendYouTube = false)
         assertTrue(released.allApplied)
         for (packageName in installed) {
             val outcome = released.outcomes.first { it.packageName == packageName }
@@ -74,7 +75,7 @@ class PolicyControllerTest {
         assumeTrue("no hardcoded browser installed", installedBrowsers.isNotEmpty())
 
         // suspendTargets = false is the "time remaining" case; browsers must not follow it.
-        val report = policy.applyEnforcement(suspendTargets = false)
+        val report = policy.applyEnforcement(suspendTargets = false, suspendYouTube = false)
         for (packageName in installedBrowsers) {
             val outcome = report.outcomes.first { it.packageName == packageName }
             assertEquals("$packageName must stay suspended", true, outcome.actualSuspended)
@@ -83,11 +84,11 @@ class PolicyControllerTest {
 
     @Test
     fun chromeAndWebViewAreNeverSuspended() {
-        policy.applyEnforcement(suspendTargets = true)
+        policy.applyEnforcement(suspendTargets = true, suspendYouTube = true)
         for (packageName in BlockedBrowsers.NEVER_SUSPEND) {
             assertFalse(
                 "$packageName must never appear in an enforcement report",
-                policy.applyEnforcement(suspendTargets = true).outcomes.any { it.packageName == packageName },
+                policy.applyEnforcement(suspendTargets = true, suspendYouTube = true).outcomes.any { it.packageName == packageName },
             )
         }
         // And Chrome must still be usable.
@@ -103,10 +104,25 @@ class PolicyControllerTest {
         // Re-applying enforcement is what a package-added broadcast triggers; it must be
         // idempotent and must reassert, not toggle.
         repeat(3) {
-            val report = policy.applyEnforcement(suspendTargets = true)
+            val report = policy.applyEnforcement(suspendTargets = true, suspendYouTube = true)
             assertTrue(report.allApplied)
         }
-        assertTrue(policy.applyEnforcement(suspendTargets = true).installed.all { it.actualSuspended == true })
+        assertTrue(policy.applyEnforcement(suspendTargets = true, suspendYouTube = true).installed.all { it.actualSuspended == true })
+    }
+
+    @Test
+    fun youtubeFollowsTheShortsGuardRuleNotTheAllowance() {
+        assumeTrue("YouTube is not installed", policy.isInstalled(ShortsGuard.YOUTUBE_PACKAGE))
+
+        // Guard off while allowance remains: YouTube goes, targets stay.
+        val off = policy.applyEnforcement(suspendTargets = false, suspendYouTube = true)
+        assertTrue("failures: ${off.failures.map { it.packageName to it.error }}", off.allApplied)
+        assertEquals(true, off.outcomes.first { it.packageName == ShortsGuard.YOUTUBE_PACKAGE }.actualSuspended)
+
+        // Guard back on with the allowance spent: YouTube returns, targets stay suspended.
+        val on = policy.applyEnforcement(suspendTargets = true, suspendYouTube = false)
+        assertTrue(on.allApplied)
+        assertEquals(false, on.outcomes.first { it.packageName == ShortsGuard.YOUTUBE_PACKAGE }.actualSuspended)
     }
 
     // -- Gate C -------------------------------------------------------------------------
@@ -122,8 +138,12 @@ class PolicyControllerTest {
             "read-back did not contain every required host: ${report.verifiedValue}",
             report.storedPolicyVerified,
         )
-        for (host in BlockedSites.HOSTS) {
-            assertTrue("missing $host", report.verifiedValue!!.contains(host))
+        // Parsed rather than searched as text: Android's org.json writes "/" as "\/", so the
+        // path filter never appears verbatim in the stored string.
+        val stored = org.json.JSONArray(report.verifiedValue!!)
+        val present = (0 until stored.length()).map { stored.getString(it) }
+        for (filter in BlockedSites.FILTERS) {
+            assertTrue("missing $filter", filter in present)
         }
     }
 

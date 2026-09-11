@@ -7,8 +7,10 @@ import android.util.Log
 import dev.personal.doomstop.DoomStopApp
 import dev.personal.doomstop.admin.PolicyController
 import dev.personal.doomstop.config.BlockedBrowsers
+import dev.personal.doomstop.config.ShortsGuard
 import dev.personal.doomstop.config.TargetPackages
 import dev.personal.doomstop.core.Trigger
+import dev.personal.doomstop.data.BootMarkerStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -31,7 +33,10 @@ class PackageChangeReceiver : BroadcastReceiver() {
 
     override fun onReceive(context: Context, intent: Intent) {
         val changed = intent.data?.schemeSpecificPart ?: return
-        if (changed !in TargetPackages.ALL && changed !in BlockedBrowsers.ALL) return
+        if (changed !in TargetPackages.ALL &&
+            changed !in BlockedBrowsers.ALL &&
+            changed != ShortsGuard.YOUTUBE_PACKAGE
+        ) return
 
         Log.i(TAG, "package change for $changed (${intent.action})")
 
@@ -39,7 +44,11 @@ class PackageChangeReceiver : BroadcastReceiver() {
         // freshly installed browser every millisecond of this window is measurable.
         val policy = PolicyController(context)
         if (policy.isDeviceOwner && changed in BlockedBrowsers.ALL) {
-            policy.applyEnforcement(suspendTargets = lastKnownSuspendState(context))
+            val marker = BootMarkerStore(context)
+            policy.applyEnforcement(
+                suspendTargets = marker.targetsSuspended,
+                suspendYouTube = marker.youtubeSuspended,
+            )
         }
 
         val app = context.applicationContext as? DoomStopApp ?: return
@@ -54,13 +63,6 @@ class PackageChangeReceiver : BroadcastReceiver() {
             }
         }
     }
-
-    /**
-     * The device-protected marker, which is readable even in direct boot and does not
-     * require the coordinator to have started yet.
-     */
-    private fun lastKnownSuspendState(context: Context): Boolean =
-        dev.personal.doomstop.data.BootMarkerStore(context).targetsSuspended
 
     private companion object {
         const val TAG = "DoomStopPackages"

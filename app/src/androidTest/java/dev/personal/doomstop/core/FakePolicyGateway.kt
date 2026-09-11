@@ -8,6 +8,7 @@ import dev.personal.doomstop.admin.SelfProtectionReport
 import dev.personal.doomstop.admin.SuspensionReport
 import dev.personal.doomstop.config.BlockedBrowsers
 import dev.personal.doomstop.config.BlockedSites
+import dev.personal.doomstop.config.ShortsGuard
 import dev.personal.doomstop.config.TargetPackages
 
 /**
@@ -47,9 +48,10 @@ class FakePolicyGateway(
     var relinquishCalls = 0
         private set
 
-    override fun applyEnforcement(suspendTargets: Boolean): SuspensionReport {
+    override fun applyEnforcement(suspendTargets: Boolean, suspendYouTube: Boolean): SuspensionReport {
         val outcomes = TargetPackages.ALL.map { outcome(it, suspendTargets) } +
-            BlockedBrowsers.ALL.map { outcome(it, true) }
+            BlockedBrowsers.ALL.map { outcome(it, true) } +
+            outcome(ShortsGuard.YOUTUBE_PACKAGE, suspendYouTube)
         return SuspensionReport(outcomes)
     }
 
@@ -67,7 +69,8 @@ class FakePolicyGateway(
         return PackageOutcome(packageName, true, wanted, wanted)
     }
 
-    override fun manageablePackages(): Set<String> = TargetPackages.ALL + BlockedBrowsers.ALL
+    override fun manageablePackages(): Set<String> =
+        TargetPackages.ALL + BlockedBrowsers.ALL + ShortsGuard.YOUTUBE_PACKAGE
 
     override fun readSuspended(packageName: String): Boolean? = when {
         unreadableSuspension -> null

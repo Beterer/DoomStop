@@ -27,6 +27,28 @@ data class ReadinessItem(
 )
 
 /**
+ * The Shorts guard as the platform reports it, and the verdict of the rule built on it.
+ *
+ * [youtubeSuspended] is what the rule asked for this pass, not a read-back; whether the
+ * platform honoured it is in [LimiterStatus.suspension] like every other package.
+ */
+data class ShortsGuardStatus(
+    val youtubeInstalled: Boolean,
+    val enabledInSettings: Boolean,
+    val connected: Boolean,
+    val youtubeSuspended: Boolean,
+) {
+    companion object {
+        val UNKNOWN = ShortsGuardStatus(
+            youtubeInstalled = false,
+            enabledInSettings = false,
+            connected = false,
+            youtubeSuspended = false,
+        )
+    }
+}
+
+/**
  * Everything the UI and the notification need, computed once per tick by the coordinator.
  *
  * Deliberately explicit about capability: [protectionActive] is only true when every
@@ -54,6 +76,7 @@ data class LimiterStatus(
     val installedBlockedBrowsers: List<String>,
     val suspension: SuspensionReport?,
     val chrome: ChromePolicyReport?,
+    val shortsGuard: ShortsGuardStatus,
     val selfProtection: SelfProtectionReport?,
     val activeRestrictions: Set<String>,
     val tracker: TrackerSnapshot?,
@@ -138,6 +161,18 @@ data class LimiterStatus(
                 satisfied = selfProtection?.userControlDisabled == true,
                 remedy = "Not supported on every platform build; force-stop may remain available",
             ),
+            // Not part of protectionActive: with the guard off YouTube is suspended, so
+            // Shorts stays unavailable either way. This line says which way it is.
+            ReadinessItem(
+                label = "YouTube Shorts guard running",
+                satisfied = !shortsGuard.youtubeInstalled || shortsGuard.connected,
+                remedy = if (shortsGuard.youtubeSuspended) {
+                    "Off, so the whole YouTube app is suspended. Switch on DoomStop Shorts guard " +
+                        "in Settings > Accessibility to get ordinary YouTube back"
+                } else {
+                    "Switch on DoomStop Shorts guard in Settings > Accessibility"
+                },
+            ),
         )
 
     /** Lines that must be green before enforcement can be switched on. */
@@ -170,6 +205,7 @@ data class LimiterStatus(
             installedBlockedBrowsers = emptyList(),
             suspension = null,
             chrome = null,
+            shortsGuard = ShortsGuardStatus.UNKNOWN,
             selfProtection = null,
             activeRestrictions = emptySet(),
             tracker = null,

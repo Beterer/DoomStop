@@ -29,6 +29,7 @@ fun SetupScreen(
     status: LimiterStatus,
     onGrantUsageAccess: () -> Unit,
     onAllowExactAlarms: () -> Unit,
+    onOpenAccessibilitySettings: () -> Unit,
     onStartMonitor: () -> Unit,
     onSetPin: () -> Unit,
     onRefresh: () -> Unit,
@@ -74,6 +75,17 @@ fun SetupScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
+            if (status.shortsGuard.youtubeInstalled && !status.shortsGuard.connected) {
+                Button(onClick = onOpenAccessibilitySettings, modifier = Modifier.fillMaxWidth()) {
+                    Text("Switch on the Shorts guard")
+                }
+                Text(
+                    "Settings > Accessibility > DoomStop Shorts guard. Until it is on, the whole " +
+                        "YouTube app stays suspended.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
             if (!status.exactAlarmsAllowed) {
                 OutlinedButton(onClick = onAllowExactAlarms, modifier = Modifier.fillMaxWidth()) {
                     Text("Allow exact alarms (optional)")
@@ -92,6 +104,7 @@ fun SetupScreen(
 
         DeviceOwnerCard(status)
         ChromePolicyCard(status)
+        ShortsGuardCard(status)
         SuspensionCard(status)
         SelfProtectionCard(status)
         MonitorCard(status)
@@ -159,6 +172,15 @@ private fun ChromePolicyCard(status: LimiterStatus) {
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Text(
+            "Blocked paths (the rest of the site stays available): " +
+                BlockedSites.PATH_FILTERS.joinToString(", ") +
+                ". A Shorts link or address is blocked; a Short reached by tapping around inside " +
+                "YouTube's own website is not, because the site changes pages without a new " +
+                "page load and Chrome only checks its blocklist on a load.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Text(
             "This line checks the value DevicePolicyManager holds. It is NOT evidence that Chrome " +
                 "accepted it: verify independently at chrome://policy and by opening a blocked host. " +
                 "A tab opened before the policy was applied may need Chrome restarted; the policy " +
@@ -167,6 +189,30 @@ private fun ChromePolicyCard(status: LimiterStatus) {
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         if (chrome?.verifiedValue != null) MonospaceText(chrome.verifiedValue)
+    }
+}
+
+/**
+ * Best-effort by nature, and labelled so: detection depends on YouTube's own view names.
+ * What is firm is the fallback, which is why it is spelled out on the card.
+ */
+@Composable
+private fun ShortsGuardCard(status: LimiterStatus) {
+    val guard = status.shortsGuard
+    SectionCard("YouTube Shorts guard") {
+        StatRow("YouTube installed", if (guard.youtubeInstalled) "yes" else "no")
+        StatRow("Switched on in Settings", if (guard.enabledInSettings) "yes" else "no")
+        StatRow("Running", if (guard.connected) "yes" else "no")
+        StatRow("YouTube suspended because the guard is off", if (guard.youtubeSuspended) "yes" else "no")
+        Text(
+            "Closes the Shorts player inside YouTube and leaves ordinary videos alone. This is " +
+                "best-effort, not a hard limit: it recognises Shorts by the names of YouTube's " +
+                "own screen elements, and a YouTube update can rename them without any error " +
+                "showing here. The firm part is the fallback: while the guard is not running, " +
+                "the whole YouTube app is suspended.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 

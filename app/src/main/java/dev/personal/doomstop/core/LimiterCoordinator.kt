@@ -8,6 +8,7 @@ import dev.personal.doomstop.admin.HardeningOptions
 import dev.personal.doomstop.admin.SelfProtectionReport
 import dev.personal.doomstop.admin.SuspensionReport
 import dev.personal.doomstop.config.BlockedSites
+import dev.personal.doomstop.config.ShortsGuard
 import dev.personal.doomstop.config.TargetPackages
 import dev.personal.doomstop.data.BootMarkerStore
 import dev.personal.doomstop.data.CheckpointEntity
@@ -32,7 +33,9 @@ import dev.personal.doomstop.domain.RecoveryRequest
 import dev.personal.doomstop.domain.SettledWindow
 import dev.personal.doomstop.domain.TickInput
 import dev.personal.doomstop.domain.VisibilityTransition
+import dev.personal.doomstop.monitor.AndroidShortsGuardProbe
 import dev.personal.doomstop.monitor.AppPermissions
+import dev.personal.doomstop.monitor.ShortsGuardProbe
 import dev.personal.doomstop.monitor.TrackedEvent
 import dev.personal.doomstop.monitor.TrackedEventType
 import dev.personal.doomstop.monitor.TrackerState
@@ -56,6 +59,8 @@ enum class Trigger {
     DEADLINE_ALARM,
     ADMIN_ACTION,
     UI,
+    /** The Shorts guard connected or disconnected; YouTube may need suspending or releasing. */
+    GUARD_CHANGE,
 }
 
 /** One step of PIN-authorized maintenance, with the outcome actually read back. */
@@ -107,6 +112,7 @@ class LimiterCoordinator(
     private val bootMarker: BootMarkerStore,
     private val clock: ClockSource,
     private val deadlines: DeadlineScheduler,
+    private val guardProbe: ShortsGuardProbe = AndroidShortsGuardProbe(context),
 ) {
 
     private val mutex = Mutex()
@@ -118,7 +124,12 @@ class LimiterCoordinator(
 
     /** Last enforcement state actually pushed to the platform, to avoid a DPM call per second. */
     private var lastAppliedSuspendTargets: Boolean? = null
+    private var lastAppliedSuspendYouTube: Boolean? = null
     private var lastSuspensionReport: SuspensionReport? = null
+
+    /** When this process first saw the Shorts guard disconnected; null while it is connected. */
+    private var guardNotConnectedSinceElapsedMs: Long? = null
+    private var lastShortsGuard: ShortsGuardStatus? = null
     private var lastEnforcementSyncElapsedMs = 0L
 
     private var lastChromeReport: ChromePolicyReport? = null
@@ -300,20 +311,25 @@ class LimiterCoordinator(
             EnforcementDecision(suspendTargets = false, reason = EnforcementReason.ALLOWANCE_AVAILABLE)
         }
 
-        if (settingsEntity.setupCompleted && !settingsEntity.maintenanceMode) {
+        val enforcing = settingsEntity.setupCompleted && !settingsEntity.maintenanceMode
+        val shortsGuard = evaluateShortsGuard(enforcing, nowElapsedMs, acceptedNowMs)
+
+        if (enforcing) {
             // A package change must re-apply policy immediately rather than wait for the
             // periodic resync: for a freshly installed browser the whole point is how
             // narrow that window is. Measured at 4.6 s when this was left to the timer.
             val force = trigger == Trigger.PACKAGE_CHANGE ||
                 trigger == Trigger.BOOT ||
-                trigger == Trigger.ADMIN_ACTION
-            syncEnforcement(decision.suspendTargets, nowElapsedMs, acceptedNowMs, force)
+                trigger == Trigger.ADMIN_ACTION ||
+                trigger == Trigger.GUARD_CHANGE
+            syncEnforcement(decision.suspendTargets, shortsGuard.youtubeSuspended, nowElapsedMs, acceptedNowMs, force)
             syncChromePolicy(nowElapsedMs, acceptedNowMs, force)
         }
 
         bootMarker.record(
-            protectionEnabled = settingsEntity.setupCompleted && !settingsEntity.maintenanceMode,
+            protectionEnabled = enforcing,
             targetsSuspended = decision.suspendTargets,
+            youtubeSuspended = shortsGuard.youtubeSuspended,
             nowWallMs = acceptedNowMs,
         )
 
@@ -322,7 +338,39 @@ class LimiterCoordinator(
             reportedWallMs,
         )
 
-        return publish(settingsEntity, settings, boundary, today, decision, checkpoint, health, acceptedNowMs)
+        return publish(settingsEntity, settings, boundary, today, decision, checkpoint, health, shortsGuard, acceptedNowMs)
+    }
+
+    /**
+     * The Shorts-guard rule for this pass. The grace clock starts the first time this process
+     * sees the guard disconnected, so a restart gives the system the full allowance to bind
+     * it again before YouTube is suspended.
+     */
+    private suspend fun evaluateShortsGuard(enforcing: Boolean, nowElapsedMs: Long, nowWallMs: Long): ShortsGuardStatus {
+        val connected = guardProbe.connected
+        val enabled = guardProbe.enabledInSettings()
+        if (connected) {
+            guardNotConnectedSinceElapsedMs = null
+        } else if (guardNotConnectedSinceElapsedMs == null) {
+            guardNotConnectedSinceElapsedMs = nowElapsedMs
+        }
+        val notConnectedForMs = guardNotConnectedSinceElapsedMs?.let { nowElapsedMs - it } ?: 0L
+
+        val status = ShortsGuardStatus(
+            youtubeInstalled = policy.isInstalled(ShortsGuard.YOUTUBE_PACKAGE),
+            enabledInSettings = enabled,
+            connected = connected,
+            youtubeSuspended = ShortsGuard.youtubeMustBeSuspended(enforcing, enabled, connected, notConnectedForMs),
+        )
+        if (status.youtubeSuspended && status.youtubeInstalled && lastShortsGuard?.youtubeSuspended != true) {
+            recordDiagnostic(
+                type = "shorts_guard_off",
+                detail = if (enabled) "guard enabled but not running" else "guard switched off in Settings",
+                nowWallMs = nowWallMs,
+            )
+        }
+        lastShortsGuard = status
+        return status
     }
 
     /**
@@ -451,17 +499,19 @@ class LimiterCoordinator(
      */
     private suspend fun syncEnforcement(
         suspendTargets: Boolean,
+        suspendYouTube: Boolean,
         nowElapsedMs: Long,
         nowWallMs: Long,
         force: Boolean,
     ) {
-        val changed = lastAppliedSuspendTargets != suspendTargets
+        val changed = lastAppliedSuspendTargets != suspendTargets || lastAppliedSuspendYouTube != suspendYouTube
         val due = nowElapsedMs - lastEnforcementSyncElapsedMs >= ENFORCEMENT_RESYNC_MS
         if (!force && !changed && !due) return
 
         recordSuspensionLedger(nowWallMs)
-        val report = policy.applyEnforcement(suspendTargets)
+        val report = policy.applyEnforcement(suspendTargets, suspendYouTube)
         lastAppliedSuspendTargets = suspendTargets
+        lastAppliedSuspendYouTube = suspendYouTube
         lastSuspensionReport = report
         lastEnforcementSyncElapsedMs = nowElapsedMs
 
@@ -768,8 +818,14 @@ class LimiterCoordinator(
         val nowWallMs = acceptedNowLocked()
         val settings = dao.settings() ?: seedDefaultSettings(nowWallMs)
         dao.upsertSettings(settings.copy(maintenanceMode = true))
-        bootMarker.record(protectionEnabled = false, targetsSuspended = false, nowWallMs = nowWallMs)
+        bootMarker.record(
+            protectionEnabled = false,
+            targetsSuspended = false,
+            youtubeSuspended = false,
+            nowWallMs = nowWallMs,
+        )
         lastAppliedSuspendTargets = null
+        lastAppliedSuspendYouTube = null
         lastChromeReport = null
 
         val stages = mutableListOf<RestoreStage>()
@@ -819,6 +875,7 @@ class LimiterCoordinator(
             val settings = dao.settings() ?: seedDefaultSettings(clock.wallTimeMs())
             dao.upsertSettings(settings.copy(maintenanceMode = false))
             lastAppliedSuspendTargets = null
+            lastAppliedSuspendYouTube = null
             lastChromeReport = null
             recordDiagnostic("maintenance_cancelled", "enforcement resumed", clock.wallTimeMs())
         }
@@ -1015,6 +1072,7 @@ class LimiterCoordinator(
         decision: EnforcementDecision,
         checkpoint: Checkpoint,
         health: MonitorHealth,
+        shortsGuard: ShortsGuardStatus,
         nowWallMs: Long,
     ): LimiterStatus {
         val status = LimiterStatus(
@@ -1037,6 +1095,7 @@ class LimiterCoordinator(
             installedBlockedBrowsers = policy.installedBlockedBrowsers(),
             suspension = lastSuspensionReport,
             chrome = lastChromeReport,
+            shortsGuard = shortsGuard,
             selfProtection = currentSelfProtection(
                 requested = settingsEntity.setupCompleted && !settingsEntity.maintenanceMode,
             ),

@@ -8,6 +8,10 @@ the phone stops it. When the shared allowance runs out, the three apps are suspe
 trusted person holds a six-digit PIN that authorises a fixed extension. The three services'
 websites are blocked in Chrome permanently, whether or not app time remains.
 
+YouTube stays available, but its Shorts player is closed the moment it opens. That part is
+best-effort rather than a hard limit; what backs it up is that switching the guard off
+suspends the whole YouTube app.
+
 The phone otherwise stays a normal phone: installing apps needs no PIN, and calls, SMS,
 maps, camera, banking and ordinary browsing are untouched.
 
@@ -20,16 +24,17 @@ Built to [`docs/social-limit-implementation-plan.md`](docs/social-limit-implemen
 | Area | State |
 |---|---|
 | Application, accounting core, enforcement, PIN, UI | Implemented |
-| Unit tests (86, JVM only) | Passing |
-| Instrumented tests (55, emulator) | Passing |
-| Android lint | Clean |
+| Unit tests (98, JVM only) | Passing |
+| Instrumented tests (56, emulator) | Compile. The last emulator run (55 passing) predates the Shorts guard and was not repeated for it |
+| Android lint | No errors. The only warnings are notices that newer dependency versions exist |
 | Gate A — device-owner provisioning | See `docs/test-report.md` |
 | Gate B — actual app suspension | See `docs/test-report.md` |
 | Gate C — Chrome policy without an enterprise backend | See `docs/test-report.md` |
 | Gate D — usage observation and background survival | Measured on the Pixel 9 itself; see `docs/test-report.md` §6.1 |
 | Signed release and in-place update | Verified end to end; see `docs/test-report.md` §7.4 |
 | Code review of 2026-09-08 (findings F1-F8) | Fixed and covered by regression tests |
-| Provisioning on the real Pixel 9 | **Blocked** — requires a factory reset, not yet authorised |
+| Provisioning on the real Pixel 9 | Done 2026-09-09 after a factory reset; see `docs/test-report.md` §10.1 |
+| YouTube Shorts guard (0.2.0) | Measured on the Pixel 9, including one known Chrome gap; see `docs/test-report.md` §10.2 |
 
 `docs/test-report.md` records what was measured, on what, and what is still unverified.
 Nothing in this repository claims an enforcement guarantee that has not been demonstrated.
@@ -72,7 +77,17 @@ Stated plainly, because a limiter that overstates its reach is worse than none:
   online throttling.
 - **Anyone with recovery or firmware control can reset the device.** This protects against
   ordinary on-phone circumvention, not against an owner willing to wipe or reflash.
-- YouTube, Shorts, Facebook and Snapchat are out of scope.
+- **The Shorts guard is best-effort.** It recognises the Shorts player by the names of
+  YouTube's own screen elements, measured on YouTube 21.36.45. A YouTube update can rename
+  them, and the guard would then stop working without any error. What is firm is the rule
+  behind it: while the guard is not running, the whole YouTube app is suspended.
+- **Shorts in Chrome are only partly blocked.** Opening a Shorts link or address is blocked.
+  Tapping through to a Short inside YouTube's own website is not, because the site changes
+  pages without a new page load and Chrome only checks its blocklist on a load. This gap
+  was measured and accepted rather than closed.
+- **A patched or differently packaged YouTube client is not covered**, and YouTube videos
+  embedded in other apps are not watched.
+- Facebook and Snapchat are out of scope.
 
 ## Build
 

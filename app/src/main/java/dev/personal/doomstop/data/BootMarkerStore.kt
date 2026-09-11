@@ -8,10 +8,10 @@ import androidx.core.content.edit
  * A deliberately tiny marker in DEVICE-PROTECTED storage, readable before the first unlock.
  *
  * The Room database lives in credential-protected storage and is unreadable during direct
- * boot, so this holds only the two facts early-boot enforcement needs: that protection was
- * configured at all, and whether targets were suspended when the device went down. That is
- * enough to re-apply suspension at LOCKED_BOOT_COMPLETED and close the window between boot
- * and first unlock.
+ * boot, so this holds only the facts early-boot enforcement needs: that protection was
+ * configured at all, and what was suspended when the device went down. That is enough to
+ * re-apply suspension at LOCKED_BOOT_COMPLETED and close the window between boot and first
+ * unlock.
  *
  * What is NOT here, on purpose: the PIN, the PIN verifier, and the balance. Moving the PIN
  * into device-protected storage would make early boot easier and the PIN weaker; the plan
@@ -37,6 +37,14 @@ class BootMarkerStore(context: Context) {
         get() = prefs.getBoolean(KEY_TARGETS_SUSPENDED, true)
         set(value) = prefs.edit { putBoolean(KEY_TARGETS_SUSPENDED, value) }
 
+    /**
+     * Whether YouTube was suspended because the Shorts guard was off. Defaults to false,
+     * which is what builds before the guard existed left in force. The guard itself cannot
+     * run before the first unlock, so early boot re-applies this rather than judging it.
+     */
+    val youtubeSuspended: Boolean
+        get() = prefs.getBoolean(KEY_YOUTUBE_SUSPENDED, false)
+
     /** Wall-clock time the marker was last written, for measuring the real boot gap. */
     val updatedAtWallMs: Long
         get() = prefs.getLong(KEY_UPDATED_AT, 0L)
@@ -47,11 +55,16 @@ class BootMarkerStore(context: Context) {
      * commit synchronously -- which matters, because this value has to survive whatever
      * takes the device down.
      */
-    fun record(protectionEnabled: Boolean, targetsSuspended: Boolean, nowWallMs: Long) {
-        if (this.protectionEnabled == protectionEnabled && this.targetsSuspended == targetsSuspended) return
+    fun record(protectionEnabled: Boolean, targetsSuspended: Boolean, youtubeSuspended: Boolean, nowWallMs: Long) {
+        if (this.protectionEnabled == protectionEnabled &&
+            this.targetsSuspended == targetsSuspended &&
+            this.youtubeSuspended == youtubeSuspended &&
+            prefs.contains(KEY_YOUTUBE_SUSPENDED)
+        ) return
         prefs.edit(commit = true) {
             putBoolean(KEY_PROTECTION_ENABLED, protectionEnabled)
             putBoolean(KEY_TARGETS_SUSPENDED, targetsSuspended)
+            putBoolean(KEY_YOUTUBE_SUSPENDED, youtubeSuspended)
             putLong(KEY_UPDATED_AT, nowWallMs)
         }
     }
@@ -60,6 +73,7 @@ class BootMarkerStore(context: Context) {
         const val FILE_NAME = "doomstop_boot_marker"
         const val KEY_PROTECTION_ENABLED = "protection_enabled"
         const val KEY_TARGETS_SUSPENDED = "targets_suspended"
+        const val KEY_YOUTUBE_SUSPENDED = "youtube_suspended"
         const val KEY_UPDATED_AT = "updated_at_wall_ms"
     }
 }
