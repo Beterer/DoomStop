@@ -12,6 +12,7 @@ import dev.personal.doomstop.config.ShortsGuard
 import dev.personal.doomstop.config.TargetPackages
 import dev.personal.doomstop.data.BootMarkerStore
 import dev.personal.doomstop.data.CheckpointEntity
+import dev.personal.doomstop.data.DayBudgetEntity
 import dev.personal.doomstop.data.DiagnosticEventEntity
 import dev.personal.doomstop.data.LimiterDao
 import dev.personal.doomstop.data.PendingEventEntity
@@ -298,7 +299,9 @@ class LimiterCoordinator(
         }
 
         val todayId = boundary.dayIdAt(acceptedNowMs)
-        val settledToday = dao.dayOrCreate(todayId, settings.dailyAllowanceMs).toDayBudget()
+        val todayRow = dao.dayOrCreate(todayId, settings.dailyAllowanceMs)
+        val carriedInMs = carriedIntoToday(todayRow, checkpoint, provisional, boundary, acceptedNowMs)
+        val settledToday = todayRow.toDayBudget().copy(carriedInMs = carriedInMs)
         val provisionalTodayMs = provisional.firstOrNull { it.dayId == todayId }?.durationMs ?: 0L
         val today = settledToday.copy(chargedMs = settledToday.chargedMs + provisionalTodayMs)
 
@@ -339,6 +342,44 @@ class LimiterCoordinator(
         )
 
         return publish(settingsEntity, settings, boundary, today, decision, checkpoint, health, shortsGuard, acceptedNowMs)
+    }
+
+    /**
+     * Unused time carried into [today] from the day before.
+     *
+     * Decided exactly once, on the first pass whose settled boundary has reached the start of
+     * today: only then has every interval of yesterday been charged, so only then is its
+     * unused time a fact rather than an estimate. Before that pass -- the first
+     * [BudgetEngine.SETTLE_LAG_MS] of the day -- the value is estimated with yesterday's
+     * provisional tail included, used for enforcement, and never written.
+     */
+    private suspend fun carriedIntoToday(
+        today: DayBudgetEntity,
+        checkpoint: Checkpoint,
+        provisional: List<DaySlice>,
+        boundary: DayBoundary,
+        nowWallMs: Long,
+    ): Long {
+        today.carriedInMs?.let { return it }
+        val yesterdayId = boundary.previousDayId(today.dayId)
+        val yesterday = dao.day(yesterdayId)?.toDayBudget()
+        val recoveryOutstanding = checkpoint.recovery != null
+
+        if (checkpoint.settledWallMs < boundary.startOfDayMs(today.dayId)) {
+            val tailMs = provisional.firstOrNull { it.dayId == yesterdayId }?.durationMs ?: 0L
+            return BudgetEngine.carryInto(yesterday?.copy(chargedMs = yesterday.chargedMs + tailMs), recoveryOutstanding)
+        }
+
+        val carried = BudgetEngine.carryInto(yesterday, recoveryOutstanding)
+        dao.fixCarriedIn(today.dayId, carried)
+        if (recoveryOutstanding && yesterday != null && yesterday.unusedToCarryMs > 0) {
+            recordDiagnostic(
+                type = "carryover_withheld",
+                detail = "${yesterday.unusedToCarryMs} ms not carried into ${today.dayId}: recovery outstanding",
+                nowWallMs = nowWallMs,
+            )
+        }
+        return carried
     }
 
     /**
@@ -704,7 +745,7 @@ class LimiterCoordinator(
             boundaryFor(settings).dayIdAt(acceptedNowLocked()),
             settings.dailyAllowanceMs,
         ).toDayBudget()
-        val updated = DayBudget(today.dayId, newDailyAllowanceMs, today.chargedMs, today.extraGrantedMs)
+        val updated = today.copy(baseAllowanceMs = newDailyAllowanceMs)
         today.remainingMs to updated.remainingMs
     }
 
@@ -1083,6 +1124,7 @@ class LimiterCoordinator(
             remainingMs = today.remainingMs,
             totalAllowanceMs = today.totalAllowanceMs,
             baseAllowanceMs = today.baseAllowanceMs,
+            carriedInMs = today.carriedInMs,
             chargedMs = today.chargedMs,
             extraGrantedMs = today.extraGrantedMs,
             nextResetWallMs = boundary.nextBoundaryAfter(nowWallMs),

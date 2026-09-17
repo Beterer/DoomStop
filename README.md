@@ -5,7 +5,8 @@ enforced with Android device-owner policy.
 
 There is no Start button. Opening a target app starts counting; switching away or locking
 the phone stops it. When the shared allowance runs out, the three apps are suspended. A
-trusted person holds a six-digit PIN that authorises a fixed extension. The three services'
+trusted person holds a six-digit PIN that authorises a fixed extension. Time left unused at
+midnight carries into the next day, with no cap; extension time does not. The three services'
 websites are blocked in Chrome permanently, whether or not app time remains.
 
 YouTube stays available, but its Shorts player is closed the moment it opens. That part is
@@ -24,8 +25,8 @@ Built to [`docs/social-limit-implementation-plan.md`](docs/social-limit-implemen
 | Area | State |
 |---|---|
 | Application, accounting core, enforcement, PIN, UI | Implemented |
-| Unit tests (98, JVM only) | Passing |
-| Instrumented tests (56, emulator) | Compile. The last emulator run (55 passing) predates the Shorts guard and was not repeated for it |
+| Unit tests (108, JVM only) | Passing |
+| Instrumented tests (63, emulator) | The 44 that need no device owner pass on 0.3.0. The 19 that do were last run before the Shorts guard; see `docs/test-report.md` §11 |
 | Android lint | No errors. The only warnings are notices that newer dependency versions exist |
 | Gate A — device-owner provisioning | See `docs/test-report.md` |
 | Gate B — actual app suspension | See `docs/test-report.md` |
@@ -35,6 +36,7 @@ Built to [`docs/social-limit-implementation-plan.md`](docs/social-limit-implemen
 | Code review of 2026-09-08 (findings F1-F8) | Fixed and covered by regression tests |
 | Provisioning on the real Pixel 9 | Done 2026-09-09 after a factory reset; see `docs/test-report.md` §10.1 |
 | YouTube Shorts guard (0.2.0) | Measured on the Pixel 9, including one known Chrome gap; see `docs/test-report.md` §10.2 |
+| Unused-time carryover (0.3.0) | Engine and coordinator tests. Installed on the Pixel 9, where the update carried the previous day's leftover; a real midnight not yet observed there. See `docs/test-report.md` §11 |
 
 `docs/test-report.md` records what was measured, on what, and what is still unverified.
 Nothing in this repository claims an enforcement guarantee that has not been demonstrated.
@@ -68,6 +70,11 @@ Stated plainly, because a limiter that overstates its reach is worse than none:
 - **A target that stays paused-but-never-stopped ends in a question, not an answer.** After
   ten minutes the observer refuses to interpret it, suspends the targets and asks the PIN
   holder, rather than silently deciding the app went away.
+- **Carried-over time is withheld when the record is incomplete.** A day the app never saw
+  carries nothing, and neither does a day that ends while a recovery is outstanding.
+  Acknowledging later does not bring it back, and with no cap that can be a large balance.
+  Carryover has been tested against the accounting core and a real database. On the phone,
+  only the carryover decided when 0.3.0 was installed has been seen, not a real midnight.
 - **A controller can be killed or delayed by the OS.** Suspension that is already applied
   persists, but a crash while apps are allowed does not suspend them by magic. Gaps are
   reconciled from usage events on restart; an unreconstructable gap suspends the apps and

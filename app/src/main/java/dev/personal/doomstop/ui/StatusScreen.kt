@@ -50,6 +50,9 @@ fun StatusScreen(
             StatRow("Remaining", formatDuration(status.remainingMs), emphasise = true)
             StatRow("Used", formatDuration(status.chargedMs))
             StatRow("Base allowance", formatDuration(status.baseAllowanceMs))
+            if (status.carriedInMs > 0) {
+                StatRow("Carried over from yesterday", formatDuration(status.carriedInMs))
+            }
             if (status.extraGrantedMs > 0) {
                 StatRow("Extra granted today", formatDuration(status.extraGrantedMs))
             }

@@ -472,6 +472,20 @@ object BudgetEngine {
         else -> boundary.nextBoundaryAfter(nowWallMs)
     }
 
+    /**
+     * Unused time carried into a day from [yesterday], the previous accounting day's row.
+     *
+     * Nothing carries when there is no such row: a day the app never saw has no record of
+     * what was used, and time is never awarded on the strength of an absent record. Nothing
+     * carries while a recovery is outstanding either, because yesterday's charged total may
+     * be missing exactly the usage the lost interval hid.
+     *
+     * The caller must only pass a [yesterday] whose every interval has been settled; otherwise
+     * the result is an estimate and must not be stored.
+     */
+    fun carryInto(yesterday: DayBudget?, recoveryOutstanding: Boolean): Long =
+        if (yesterday == null || recoveryOutstanding) 0L else yesterday.unusedToCarryMs
+
     /** Grant one configured extension. Extra time lives on the day's row, so it expires with it. */
     fun withExtension(day: DayBudget, settings: LimiterSettings): DayBudget =
         day.copy(extraGrantedMs = day.extraGrantedMs + settings.extensionMs)

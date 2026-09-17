@@ -46,6 +46,10 @@ abstract class LimiterDao {
     @Query("UPDATE day_budget SET baseAllowanceMs = :baseMs WHERE dayId = :dayId")
     abstract suspend fun setBaseAllowance(dayId: String, baseMs: Long)
 
+    /** Decide a day's carried-in time. Only the first decision lands; later calls change nothing. */
+    @Query("UPDATE day_budget SET carriedInMs = :carriedInMs WHERE dayId = :dayId AND carriedInMs IS NULL")
+    abstract suspend fun fixCarriedIn(dayId: String, carriedInMs: Long)
+
     @Query("DELETE FROM day_budget WHERE dayId < :oldestDayIdToKeep")
     abstract suspend fun pruneDaysBefore(oldestDayIdToKeep: String)
 

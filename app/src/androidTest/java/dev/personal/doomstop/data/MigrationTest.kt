@@ -105,4 +105,35 @@ class MigrationTest {
             database.close()
         }
     }
+
+    @Test
+    fun version2UpgradesWithEveryDaysCarryoverStillUndecided() = runTest {
+        val name = "migration-2-3-test.db"
+        helper.createDatabase(name, 2).use { db ->
+            db.execSQL(
+                "INSERT INTO day_budget (dayId, baseAllowanceMs, chargedMs, extraGrantedMs) " +
+                    "VALUES ('2026-09-16', 1800000, 600000, 0), ('2026-09-17', 1800000, 120000, 600000)"
+            )
+        }
+
+        helper.runMigrationsAndValidate(name, 3, true, LimiterDatabase.MIGRATION_2_3).close()
+
+        val database = androidx.room.Room
+            .databaseBuilder(InstrumentationRegistry.getInstrumentation().targetContext, LimiterDatabase::class.java, name)
+            .addMigrations(*LimiterDatabase.MIGRATIONS)
+            .build()
+        try {
+            val dao = database.dao()
+            val today = dao.day("2026-09-17")
+            assertEquals(120_000L, today?.chargedMs)
+            assertEquals(600_000L, today?.extraGrantedMs)
+            assertNull(
+                "an old row records no decision, so the next pass decides it from yesterday's row",
+                today?.carriedInMs,
+            )
+            assertNull(dao.day("2026-09-16")?.carriedInMs)
+        } finally {
+            database.close()
+        }
+    }
 }

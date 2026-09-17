@@ -12,6 +12,7 @@ import dev.personal.doomstop.data.PreviousPolicyState
 import dev.personal.doomstop.data.SettingsEntity
 import dev.personal.doomstop.domain.CheckpointState
 import dev.personal.doomstop.domain.ClockSource
+import dev.personal.doomstop.domain.DayBoundary
 import dev.personal.doomstop.domain.EnforcementReason
 import dev.personal.doomstop.monitor.AppPermissions
 import dev.personal.doomstop.monitor.TrackedEvent
@@ -360,6 +361,98 @@ class CoordinatorRegressionTest {
         assertEquals(allowanceMs, status.remainingMs)
         assertFalse(status.enforcement.suspendTargets)
         assertEquals("yesterday's usage is still on record", allowanceMs, settledChargeMs(exhaustedDay))
+    }
+
+    // -- unused time carries over --------------------------------------------------------------
+
+    /** Idle polls, an hour apart at most, until the clock reaches [wallMs]. */
+    private suspend fun idleUntil(wallMs: Long) {
+        while (clock.wallMs < wallMs) {
+            clock.advance(minOf(3600_000L, wallMs - clock.wallMs))
+            coordinator.tick(Trigger.POLL)
+        }
+    }
+
+    private fun nextMidnight(): Long = DayBoundary(zone).nextBoundaryAfter(clock.wallMs)
+
+    @Test
+    fun unusedTimeCarriesIntoTheNextDay() = runTest {
+        usage.resume(instagram, clock.wallMs)
+        runFor(30_000, steps = 30)
+        usage.pause(instagram, clock.wallMs)
+        usage.stop(instagram, clock.wallMs)
+        val firstDay = coordinator.status.value.dayId
+
+        idleUntil(nextMidnight() + 3600_000L)
+
+        val status = coordinator.status.value
+        assertFalse(firstDay == status.dayId)
+        assertEquals("the 90 s left unused yesterday", 90_000L, status.carriedInMs)
+        assertEquals(allowanceMs + 90_000L, status.remainingMs)
+        assertEquals("and it is fixed on the day's row", 90_000L, database.dao().day(status.dayId)?.carriedInMs)
+    }
+
+    @Test
+    fun previewingAnAllowanceChangeKeepsTheCarriedTime() = runTest {
+        usage.resume(instagram, clock.wallMs)
+        runFor(30_000, steps = 30)
+        usage.pause(instagram, clock.wallMs)
+        usage.stop(instagram, clock.wallMs)
+        idleUntil(nextMidnight() + 3600_000L)
+
+        val (before, after) = coordinator.previewAllowanceChange(60_000L)
+        assertEquals(allowanceMs + 90_000L, before)
+        assertEquals("a new base does not discard what was carried in", 60_000L + 90_000L, after)
+    }
+
+    @Test
+    fun unusedTimeKeepsBuildingUpAcrossSeveralDays() = runTest {
+        idleUntil(nextMidnight() + 3600_000L)
+        assertEquals(allowanceMs, coordinator.status.value.carriedInMs)
+
+        idleUntil(nextMidnight() + 3600_000L)
+        val status = coordinator.status.value
+        assertEquals("two untouched days, and no cap", 2 * allowanceMs, status.carriedInMs)
+        assertEquals(3 * allowanceMs, status.remainingMs)
+    }
+
+    @Test
+    fun theCarryIsFixedOnlyOnceYesterdaysLastSecondsHaveSettled() = runTest {
+        idleUntil(nextMidnight() - 60_000L)
+
+        // Fifty seconds of use ending ten seconds before midnight.
+        usage.resume(instagram, clock.wallMs)
+        runFor(50_000, steps = 50)
+        usage.pause(instagram, clock.wallMs)
+        usage.stop(instagram, clock.wallMs)
+        runFor(20_000, steps = 20)
+
+        // It is now ten seconds past midnight, so yesterday's last half-minute has not settled.
+        val early = coordinator.status.value
+        assertEquals("the estimate already counts yesterday's unsettled tail", 70_000L, early.carriedInMs)
+        assertEquals(allowanceMs + 70_000L, early.remainingMs)
+        assertNull("but nothing is written while yesterday is still open", database.dao().day(early.dayId)?.carriedInMs)
+
+        runFor(60_000, steps = 60)
+        val settled = coordinator.status.value
+        assertEquals(70_000L, database.dao().day(settled.dayId)?.carriedInMs)
+        assertEquals(70_000L, settled.carriedInMs)
+    }
+
+    @Test
+    fun anOutstandingRecoveryWhenYesterdaySettlesCarriesNothing() = runTest {
+        // Nothing is used, but the usage source is lost for long enough to latch recovery.
+        usage.available = false
+        runFor(60_000)
+        usage.available = true
+        assertEquals(CheckpointState.UNCERTAIN, coordinator.status.value.checkpointState)
+
+        idleUntil(nextMidnight() + 3600_000L)
+        assertEquals(0L, coordinator.status.value.carriedInMs)
+
+        val after = coordinator.acknowledgeRecovery()
+        assertEquals("acknowledging later does not bring the withheld time back", 0L, after.carriedInMs)
+        assertEquals(allowanceMs, after.remainingMs)
     }
 
     // -- F5: events that arrive late -------------------------------------------------------------

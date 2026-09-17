@@ -63,6 +63,8 @@ data class LimiterStatus(
     val remainingMs: Long,
     val totalAllowanceMs: Long,
     val baseAllowanceMs: Long,
+    /** Unused time carried in from yesterday; an estimate until yesterday has settled. */
+    val carriedInMs: Long,
     val chargedMs: Long,
     val extraGrantedMs: Long,
     val nextResetWallMs: Long,
@@ -188,6 +190,7 @@ data class LimiterStatus(
             remainingMs = 0,
             totalAllowanceMs = settings.dailyAllowanceMs,
             baseAllowanceMs = settings.dailyAllowanceMs,
+            carriedInMs = 0,
             chargedMs = 0,
             extraGrantedMs = 0,
             nextResetWallMs = 0,

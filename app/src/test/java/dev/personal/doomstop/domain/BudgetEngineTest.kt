@@ -532,6 +532,73 @@ class BudgetEngineTest {
         assertEquals(0L, day.remainingMs)
     }
 
+    // -- carryover --------------------------------------------------------------------------------
+
+    private val minute = 60_000L
+
+    @Test
+    fun `unused time carries into the next day`() {
+        val yesterday = DayBudget("2026-09-07", 30 * minute, 10 * minute, 0)
+        assertEquals(20 * minute, BudgetEngine.carryInto(yesterday, recoveryOutstanding = false))
+    }
+
+    @Test
+    fun `carried time keeps building up across days without a cap`() {
+        val first = DayBudget("2026-09-06", 30 * minute, 0, 0)
+        val second = DayBudget("2026-09-07", 30 * minute, 0, 0, carriedInMs = 30 * minute)
+        val third = DayBudget("2026-09-08", 30 * minute, 10 * minute, 0, carriedInMs = 60 * minute)
+        assertEquals(30 * minute, BudgetEngine.carryInto(first, recoveryOutstanding = false))
+        assertEquals(60 * minute, BudgetEngine.carryInto(second, recoveryOutstanding = false))
+        assertEquals(80 * minute, BudgetEngine.carryInto(third, recoveryOutstanding = false))
+    }
+
+    @Test
+    fun `carried time counts toward what remains today`() {
+        val day = DayBudget("2026-09-08", 30 * minute, 40 * minute, 0, carriedInMs = 20 * minute)
+        assertEquals(50 * minute, day.totalAllowanceMs)
+        assertEquals(10 * minute, day.remainingMs)
+        assertFalse(day.isExhausted)
+        val deadline = BudgetEngine.nextDeadlineWallMs(day, t0Wall, targetVisible = true, boundary = boundary)
+        assertEquals(t0Wall + 10 * minute, deadline)
+    }
+
+    @Test
+    fun `unused extra time expires instead of carrying over`() {
+        val yesterday = DayBudget("2026-09-07", 30 * minute, 30 * minute, 10 * minute)
+        assertEquals(0L, BudgetEngine.carryInto(yesterday, recoveryOutstanding = false))
+    }
+
+    @Test
+    fun `extra time is spent last, so a grant made early never turns into carried time`() {
+        // 35 minutes used from 30 base plus 10 extra: the extra covered the last 5 minutes.
+        val yesterday = DayBudget("2026-09-07", 30 * minute, 35 * minute, 10 * minute)
+        assertEquals(0L, BudgetEngine.carryInto(yesterday, recoveryOutstanding = false))
+    }
+
+    @Test
+    fun `base and carried time are both spent before extra time`() {
+        // 45 minutes used from 30 base, 20 carried and 10 extra: 5 base-or-carried minutes remain.
+        val yesterday = DayBudget("2026-09-07", 30 * minute, 45 * minute, 10 * minute, carriedInMs = 20 * minute)
+        assertEquals(5 * minute, BudgetEngine.carryInto(yesterday, recoveryOutstanding = false))
+    }
+
+    @Test
+    fun `going over the limit carries nothing forward, not a debt`() {
+        val yesterday = DayBudget("2026-09-07", 30 * minute, 45 * minute, 0)
+        assertEquals(0L, BudgetEngine.carryInto(yesterday, recoveryOutstanding = false))
+    }
+
+    @Test
+    fun `a day the app never saw carries nothing`() {
+        assertEquals(0L, BudgetEngine.carryInto(null, recoveryOutstanding = false))
+    }
+
+    @Test
+    fun `nothing carries over while a recovery is outstanding`() {
+        val yesterday = DayBudget("2026-09-07", 30 * minute, 0, 0, carriedInMs = 90 * minute)
+        assertEquals(0L, BudgetEngine.carryInto(yesterday, recoveryOutstanding = true))
+    }
+
     // -- deadlines --------------------------------------------------------------------------------
 
     @Test

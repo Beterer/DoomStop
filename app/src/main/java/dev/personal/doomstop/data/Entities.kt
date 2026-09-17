@@ -53,8 +53,15 @@ data class DayBudgetEntity(
     val baseAllowanceMs: Long,
     val chargedMs: Long,
     val extraGrantedMs: Long,
+    /**
+     * Unused time carried in from the previous day. Null until that day has fully settled;
+     * then written exactly once (see [LimiterDao.fixCarriedIn]), so revisiting a day never
+     * recomputes it.
+     */
+    val carriedInMs: Long? = null,
 ) {
-    fun toDayBudget() = DayBudget(dayId, baseAllowanceMs, chargedMs, extraGrantedMs)
+    /** An undecided carryover reads as none, which is the conservative reading. */
+    fun toDayBudget() = DayBudget(dayId, baseAllowanceMs, chargedMs, extraGrantedMs, carriedInMs ?: 0L)
 
     companion object {
         fun from(budget: DayBudget) = DayBudgetEntity(

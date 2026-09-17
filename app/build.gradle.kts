@@ -34,8 +34,8 @@ android {
         minSdk = 34
         targetSdk = 37
         // 2 was the Gate D update-path build, installed on the phone but never committed.
-        versionCode = 3
-        versionName = "0.2.0"
+        versionCode = 4
+        versionName = "0.3.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         // Fixtures deliberately leave policy applied so a person can look at the result.

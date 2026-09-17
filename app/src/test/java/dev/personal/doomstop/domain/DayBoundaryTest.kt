@@ -62,6 +62,14 @@ class DayBoundaryTest {
     }
 
     @Test
+    fun `the previous day crosses month, year and leap-day boundaries`() {
+        assertEquals("2026-09-07", bucharest.previousDayId("2026-09-08"))
+        assertEquals("2026-08-31", bucharest.previousDayId("2026-09-01"))
+        assertEquals("2026-12-31", bucharest.previousDayId("2027-01-01"))
+        assertEquals("2028-02-29", bucharest.previousDayId("2028-03-01"))
+    }
+
+    @Test
     fun `a spring-forward day that skips local midnight still resolves`() {
         // Santiago's DST transition moves the clock forward at local midnight, so
         // LocalDate.atStartOfDay must be used rather than assuming 00:00 exists.

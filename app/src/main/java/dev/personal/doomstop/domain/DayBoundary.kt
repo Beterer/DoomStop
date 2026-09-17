@@ -34,6 +34,10 @@ class DayBoundary(val zone: ZoneId) {
     fun startOfDayMs(dayId: DayId): Long =
         LocalDate.parse(dayId).atStartOfDay(zone).toInstant().toEpochMilli()
 
+    /** The accounting day before [dayId]; calendar arithmetic, so no instant is involved. */
+    fun previousDayId(dayId: DayId): DayId =
+        LocalDate.parse(dayId).minusDays(1).format(DateTimeFormatter.ISO_LOCAL_DATE)
+
     /** First instant of the day following the one containing [wallMs]. */
     fun nextBoundaryAfter(wallMs: Long): Long {
         val day = LocalDate.ofInstant(Instant.ofEpochMilli(wallMs), zone)

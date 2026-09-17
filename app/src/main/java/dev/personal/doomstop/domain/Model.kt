@@ -22,18 +22,28 @@ data class LimiterSettings(
 }
 
 /**
- * One accounting day's balance. There is no rollover of unused time, and extra time
- * expires with the day because it lives on the day's own row.
+ * One accounting day's balance. Unused time carries into the next day without a cap (see
+ * [BudgetEngine.carryInto]); extra time does not, because it is counted as spent last and
+ * lives on the day's own row.
  */
 data class DayBudget(
     val dayId: DayId,
     val baseAllowanceMs: Long,
     val chargedMs: Long,
     val extraGrantedMs: Long,
+    /** Unused time carried in from the previous day. */
+    val carriedInMs: Long = 0L,
 ) {
-    val totalAllowanceMs: Long get() = baseAllowanceMs + extraGrantedMs
+    val totalAllowanceMs: Long get() = baseAllowanceMs + carriedInMs + extraGrantedMs
     val remainingMs: Long get() = (totalAllowanceMs - chargedMs).coerceAtLeast(0L)
     val isExhausted: Boolean get() = remainingMs == 0L
+
+    /**
+     * What this day passes on to the next. Base and carried time are spent before extra time,
+     * so anything left of an extension is exactly what expires, and an extension granted early
+     * can never be converted into carried time.
+     */
+    val unusedToCarryMs: Long get() = (baseAllowanceMs + carriedInMs - chargedMs).coerceAtLeast(0L)
 }
 
 /** Whether the accounting core believes its own history is complete. */

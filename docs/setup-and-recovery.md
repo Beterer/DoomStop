@@ -137,8 +137,8 @@ suspended and Shorts are unavailable either way. The line says which of the two 
 
 30 minutes a day and 10 minutes per extension are **proposed defaults, not decisions you
 have already confirmed**. The reset is at midnight in the timezone captured during setup.
-All three are editable behind the PIN. Unused time does not roll over, and extra time
-expires at the next reset.
+All three are editable behind the PIN. Unused time carries into the next day, with no cap;
+extra time does not, and expires at the next reset.
 
 ## 4. Day-to-day
 
@@ -153,6 +153,12 @@ expires at the next reset.
   work policy"**.
 - **Request more time** asks for the PIN and adds exactly one extension. A fresh PIN entry
   is needed for each one, and repeated taps cannot duplicate a grant.
+- Time left over at midnight carries into the next day, and keeps building up across days
+  with no cap. The status screen shows it as **Carried over from yesterday**. Extra time
+  is counted as spent last, so any of it left over expires instead of carrying. The amount
+  is settled about thirty seconds after midnight, once the last moments of the day have been
+  counted. A day the app never saw — the phone off from before one midnight until after the
+  next — carries nothing, and the build-up starts again from zero.
 - The three websites stay blocked in Chrome at all times, including while time remains and
   including in incognito.
 - YouTube works as normal, and YouTube time is not counted, but opening Shorts gets you sent
@@ -326,3 +332,8 @@ Acknowledging re-anchors accounting from now. Time already charged today is kept
 time is invented and no fresh allowance is granted. One caveat worth knowing: acknowledging
 also adopts the phone's **current** clock, and the anchor is what decides which accounting
 day is current. **If the clock is wrong, correct it before acknowledging.**
+
+A second caveat: if a request is still outstanding when a day ends, nothing carries into the
+next day, because the day's record may be missing usage. Acknowledging afterwards does not
+bring that time back. With no cap on carryover this can be a large balance, so acknowledging
+before midnight is worth it when the cause is understood.

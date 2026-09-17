@@ -32,7 +32,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         DiagnosticEventEntity::class,
         PolicyLedgerEntity::class,
     ],
-    version = 2,
+    version = 3,
     exportSchema = true,
 )
 abstract class LimiterDatabase : RoomDatabase() {
@@ -120,7 +120,18 @@ abstract class LimiterDatabase : RoomDatabase() {
             }
         }
 
-        val MIGRATIONS = arrayOf(MIGRATION_1_2)
+        /**
+         * Version 3 carries unused time into the next day. Existing rows are left undecided
+         * (NULL) rather than given a guessed value: the next pass decides today's carryover
+         * from yesterday's row, and an older day's NULL reads as nothing carried in.
+         */
+        val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE day_budget ADD COLUMN carriedInMs INTEGER")
+            }
+        }
+
+        val MIGRATIONS = arrayOf(MIGRATION_1_2, MIGRATION_2_3)
 
         fun build(context: Context): LimiterDatabase =
             Room.databaseBuilder(context.applicationContext, LimiterDatabase::class.java, NAME)

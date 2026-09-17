@@ -211,6 +211,19 @@ class LimiterDaoTest {
         assertTrue(day.isExhausted)
     }
 
+    @Test
+    fun carriedInTimeIsFixedOnceAndNeverRewritten() = runTest {
+        val created = dao.dayOrCreate("2026-09-09", allowanceMs)
+        assertNull("a new day's carryover is undecided until yesterday has settled", created.carriedInMs)
+
+        dao.fixCarriedIn("2026-09-09", 20L * 60_000L)
+        dao.fixCarriedIn("2026-09-09", 50L * 60_000L)
+
+        val day = dao.day("2026-09-09")!!.toDayBudget()
+        assertEquals("the first decision stands", 20L * 60_000L, day.carriedInMs)
+        assertEquals(allowanceMs + 20L * 60_000L, day.remainingMs)
+    }
+
     // -- recovery ------------------------------------------------------------------------------
 
     @Test

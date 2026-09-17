@@ -25,7 +25,9 @@ The difficult work is reliable enforcement, not UI. Complete the feasibility gat
 9. Maintain a hardcoded list of alternative browser package IDs. Suspend listed browsers already installed and newly installed. No automatic category-based blocking of unrelated applications.
 10. No login, server, analytics, cloud sync, Play Store publication, remote PIN approval, or fancy reporting.
 
-Defaults not explicitly selected by the user: propose 30 minutes daily, 10 minutes per authorized extension, and reset at midnight in the phone's timezone captured during setup. Make these editable by the PIN holder. Clearly label them defaults, not previously confirmed decisions. No unused-time rollover. Extra time expires at the next daily reset.
+Defaults not explicitly selected by the user: propose 30 minutes daily, 10 minutes per authorized extension, and reset at midnight in the phone's timezone captured during setup. Make these editable by the PIN holder. Clearly label them defaults, not previously confirmed decisions. Extra time expires at the next daily reset.
+
+*Changed by the owner on 2026-09-17, replacing "No unused-time rollover":* unused time carries into the next day, with no cap. Extra time is counted as spent last and still expires at the reset, so it never carries. A day the app never saw, or one that settles while a recovery is outstanding, carries nothing.
 
 ## 3. Honest enforcement boundary
 

@@ -1,9 +1,10 @@
 # DoomStop — test report
 
-Prepared 2026-09-08, revised 2026-09-09 after the code review in section 7, and 2026-09-11
-for the phone's provisioning and the YouTube Shorts guard (section 10). This records what
-was actually run, on what, and what has not been verified. Where a result is a measurement
-it is the measured number, not a target.
+Prepared 2026-09-08, revised 2026-09-09 after the code review in section 7, 2026-09-11
+for the phone's provisioning and the YouTube Shorts guard (section 10), and 2026-09-17 for
+unused-time carryover (section 11). This records what was actually run, on what, and what
+has not been verified. Where a result is a measurement it is the measured number, not a
+target.
 
 ### How to read a "pass" here
 
@@ -91,8 +92,9 @@ in the scratch directory, are never distributed, and were never installed on the
 
 | Suite | Count | Result |
 |---|---|---|
-| Unit (`testDebugUnitTest`), no device — class **engine** | 98 | all pass |
-| Instrumented (`connectedDebugAndroidTest`) — classes **coordinator** and **emulator** | 56 | compile; **not re-run for 0.2.0**. The last run, 55 tests, all passed, none skipped |
+| Unit (`testDebugUnitTest`), no device — class **engine** | 108 | all pass (0.3.0) |
+| Instrumented — class **coordinator** (`CoordinatorRegressionTest`, `LimiterDaoTest`, `MigrationTest`) | 44 | all pass on 0.3.0, run on a throwaway, **unprovisioned** API 36 AVD (section 11) |
+| Instrumented — class **emulator** (`PolicyControllerTest`, `EnforcementIntegrationTest`) | 19 | compile; **not re-run since 0.1.x**. On the unprovisioned AVD all 19 skipped themselves, as designed. The last provisioned run passed |
 | Android lint (`lintDebug`, `lintRelease`) | — | no errors; 9 warnings, every one a notice that a newer dependency version exists |
 | Release build without a key | — | **fails**, by design: `verifyReleaseSigning` refuses to produce an uninstallable artifact |
 | Release build with `-PallowUnsignedRelease=true` | — | `app-release-unsigned.apk`, not debuggable, not test-only, `allowBackup=false` |
@@ -105,8 +107,9 @@ measured on the phone, and the guard-off rule including its grace period (sectio
 
 Instrumented tests split into three files:
 
-- `data/LimiterDaoTest` and `data/MigrationTest` — database guarantees and the version 1 to
-  version 2 upgrade, including that an unresolved history is **not** resolved by an app update.
+- `data/LimiterDaoTest` and `data/MigrationTest` — database guarantees, the version 1 to
+  version 2 upgrade, including that an unresolved history is **not** resolved by an app update,
+  and the version 2 to version 3 upgrade that adds carryover.
 - `core/CoordinatorRegressionTest` — the regressions from section 7, exercised the way they
   actually occurred: many sequential passes against persisted state, a coordinator rebuilt
   from that state, and injected policy failures.
@@ -455,6 +458,9 @@ Two incidental findings from that run, neither a defect in this app:
 | Wrong PIN, repeated, reboot | no grant, persistent throttling | engine | **pass** — rewind *and* forward jump covered |
 | Admin session ends when the app is backgrounded | PIN needed again | source only | **not verified** — no UI-lifecycle test; the logic is unit-covered only where it is testable off-device |
 | Midnight while app open | interval split, exactly one reset | engine + coordinator | **pass** |
+| Unused time at the reset (0.3.0) | carries into the next day with no cap; unused extra time expires | engine + coordinator + **device** (update day only) | **pass** — 90 s carried after 30 s of a 120 s day; 240 s after two untouched days. On the phone, installing 0.3.0 carried 7 min 19 s from the previous day (section 11); **a real midnight has not been observed there** |
+| Use running up to midnight (0.3.0) | carryover counts yesterday's last seconds; decided once | coordinator | **pass** — estimated at 70 s ten seconds past midnight with the tail unsettled, and written as 70 s once it settled |
+| Recovery outstanding at the reset (0.3.0) | nothing carried; acknowledging later does not restore it | engine + coordinator | **pass** |
 | Manual date change forward | no new spendable day | coordinator + emulator | **pass** — jump refused, day unchanged, no new day row created |
 | Manual date change backward | no repeatable reset exploit | coordinator + emulator | **pass** — refused; the day stays exhausted |
 | Timezone change on the device | accounting day unaffected | source only | **not verified** — the accounting zone is captured at setup and never follows the device, but this has not been exercised |
@@ -470,8 +476,8 @@ Two incidental findings from that run, neither a defect in this app:
 | Reinstall target after exhaustion | remains blocked, balance not reset | emulator | **pass** |
 | Calls, SMS, maps, camera, banking, ordinary Chrome | normal | emulator (browsing only) | **partial** — telephony not testable on this emulator |
 | Battery saver and overnight idle | recovers; no accidental reset; battery recorded | phone, forced deep idle | **partial** — the foreground service survived `deviceidle force-idle`; a full night and the battery cost of the one-second poll are still unmeasured |
-| Signed in-place update | owner status, PIN, usage, policies preserved | emulator, release-signed build provisioned as device owner | **pass** — see section 7.4; ownership, uninstall blocking, the database and the self-restarting monitor all survived, and a differently-signed APK was refused |
-| Database upgrade | balance and outstanding recovery survive | coordinator (`MigrationTest`) | **pass** — an `UNCERTAIN` history stays `UNCERTAIN` across the upgrade |
+| Signed in-place update | owner status, PIN, usage, policies preserved | emulator, release-signed build provisioned as device owner; **device** for 0.2.0 → 0.3.0 | **pass** — see section 7.4; ownership, uninstall blocking, the database and the self-restarting monitor all survived, and a differently-signed APK was refused. On the phone, 0.3.0 kept ownership, the monitor, the guard and today's usage across a database migration (section 11) |
+| Database upgrade | balance and outstanding recovery survive | coordinator (`MigrationTest`) | **pass** — an `UNCERTAIN` history stays `UNCERTAIN` across the upgrade; version 2 to 3 keeps balances and leaves carryover undecided |
 | PIN-authorized restore, every step succeeding | previous values restored, only what this app changed | coordinator, injected policy | **pass** |
 | PIN-authorized restore, a step failing | ownership kept, failure named, retry works | coordinator, injected policy | **pass** |
 | Releasing device ownership | app becomes removable | coordinator, injected policy | **partial** — the staged path and its refusal-to-proceed are tested; the real `clearDeviceOwnerApp` has not been run |
@@ -534,6 +540,11 @@ Two incidental findings from that run, neither a defect in this app:
     and a Short reached by tapping around inside the site plays. Closing this would have
     meant the guard reading Chrome's address bar. The owner chose to accept the gap on
     2026-09-11.
+15. **Carryover has no cap, and it is withheld on an incomplete record.** A quiet week banks
+    every unused minute, by the owner's choice. A day that ends while a recovery is
+    outstanding carries nothing, and neither does a day the app never saw, so a large balance
+    can be lost to one unacknowledged gap. On the phone, only the carryover decided at the
+    0.3.0 update has been seen; a real midnight has not (section 11).
 
 ---
 
@@ -640,3 +651,90 @@ video player?". That is YouTube's prompt, not this app's.
 another app's link or a notification; a reboot, including the guard re-binding within the
 15-second grace; force-stopping DoomStop with the guard on; switching the guard through the
 Settings screen; and the battery cost of the YouTube event stream.
+
+---
+
+## 11. Unused-time carryover (0.3.0), 2026-09-17
+
+The owner replaced the plan's "no unused-time rollover" with carryover, with no cap. The
+rule, in `BudgetEngine.carryInto`:
+
+`carriedIn(today) = max(0, yesterday.base + yesterday.carriedIn − yesterday.charged)`
+
+Extra time is counted as spent last, so any of it left over expires and an early grant can
+never become carried time. Nothing carries from a day with no row (a day the app never
+saw), and nothing carries while a recovery is outstanding, because that day's charged total
+may be missing usage.
+
+The value is stored once, in `day_budget.carriedInMs`, on the first pass whose settled
+boundary has reached the start of today. Until then (about the first thirty seconds of the
+day) enforcement uses an estimate that includes yesterday's provisional tail, and nothing is
+written. Database version 3 adds the column. Existing rows migrate as undecided, so on the
+day the update is installed, today picks up yesterday's leftover.
+
+### Evidence
+
+| What | Class | Result |
+|---|---|---|
+| Carry, build-up without a cap, extra time expiring, an early grant, overuse, a missing day, an outstanding recovery, remaining and deadline including carried time; `previousDayId` across month, year and leap day | engine (10 tests) | pass |
+| A decided carryover is never rewritten | coordinator (`LimiterDaoTest`) | pass |
+| Version 2 to 3 keeps balances and extra time, and leaves carryover undecided | coordinator (`MigrationTest`) | pass |
+| 30 s used of 120 s carries 90 s; two untouched days carry 240 s | coordinator | pass |
+| 50 s used ending at 23:59:50: 70 s estimated at 00:00:10 with nothing written, then 70 s written | coordinator | pass |
+| Recovery outstanding over midnight carries 0, and acknowledging afterwards still shows 0 | coordinator | pass |
+| The Admin allowance preview keeps carried time | coordinator | pass |
+
+**Where the instrumented tests ran.** AVD `doomstop36` holds the release-signed device owner
+from section 7.4, so a debug-signed APK cannot be installed on it, and its owner cannot be
+uninstalled. Rather than wipe it, the suite ran on a throwaway AVD made from the same
+`android-36;google_apis_playstore;x86_64` image, **not provisioned**. 63 tests: 44 ran and
+passed; the 19 in `PolicyControllerTest` and `EnforcementIntegrationTest` skipped themselves
+because the AVD is not a device owner. The throwaway AVD was deleted afterwards, and
+`doomstop36` was not modified.
+
+**Checking the tests can fail.** The recovery test passed before the carryover logic existed,
+and the midnight test's first failure was on the estimate rather than on when the value is
+written. Both were therefore run against deliberately broken builds, then reverted:
+
+| Mutation | Test | Result |
+|---|---|---|
+| Ignore an outstanding recovery | `anOutstandingRecoveryWhenYesterdaySettlesCarriesNothing` | failed: 120 000 ms carried |
+| Decide on the first pass of the day, before yesterday settles | `theCarryIsFixedOnlyOnceYesterdaysLastSecondsHaveSettled` | failed: 90 000 ms instead of 70 000 ms |
+
+**Build host note.** During this run, Windows application control began refusing the
+Gradle-cached `aapt2.exe` (`CreateProcess error=4551, An Application Control policy has
+blocked this file`), although the same file had run earlier that day. The SDK's own
+`build-tools/36.0.0/aapt2.exe` was allowed, so the builds in this section used
+`-Pandroid.aapt2FromMavenOverride=<that path>`. Nothing about the policy was changed, and
+the override is not committed.
+
+**Not verified:** a real midnight or a real reboot across midnight; the status-screen row
+"Carried over from yesterday", which has no UI test; and the emulator class on 0.3.0. On the
+phone, only the carryover decided at the update was seen (below).
+
+### On the phone, 2026-09-17
+
+The signed 0.3.0 release was installed in place over 0.2.0 (code 3) at 11:14, with the
+Shorts guard on. The notification reads the published status, so it shows the carryover
+without opening the app.
+
+| Check | Before (0.2.0) | After (0.3.0) |
+|---|---|---|
+| Version | code 3 | code 4, `lastUpdateTime` 11:14:29 |
+| Device owner | `dev.personal.doomstop` | unchanged |
+| Monitor | foreground, `types=0x00000400` | restarted by itself within a second, same type |
+| Shorts guard | bound | bound again; YouTube not suspended 55 s after the update |
+| Targets and YouTube suspended | none | none |
+| USB debugging | on | on |
+| Notification | "21 min 00 s left today · 30 min 00 s allowance today" | "28 min 18 s left today · 37 min 19 s allowance today" |
+
+The allowance grew by 7 min 19 s: 2026-09-16's unused time, decided from that day's row on
+the first pass after the version 2 to 3 migration, exactly as intended for the day of the
+update. Time used today was unchanged (about 9 min either side). The value was the same
+40 s later.
+
+Released APK: SHA-256 `C0E91B2715B6EC945BF8D60656A280A141936A705F7D1F7712891C5942224B14`,
+signer certificate `f6bfa1d3…c0f1` as in section 7.4.
+
+**Not measured on the phone:** carryover across a real midnight, including the thirty-second
+estimate; a recovery outstanding at midnight; and the status-screen row.
