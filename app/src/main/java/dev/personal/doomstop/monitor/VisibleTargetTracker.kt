@@ -13,6 +13,14 @@ enum class TrackedEventType {
     KEYGUARD_HIDDEN,
     DEVICE_SHUTDOWN,
     DEVICE_STARTUP,
+
+    /**
+     * A package (Instagram, in practice) entered or left a state that must not be metered --
+     * a DM screen being on top. Carried on the event stream, and not tied to a target being
+     * visible, so a masked interval replays identically to the pass that first observed it.
+     */
+    PACKAGE_MASKED,
+    PACKAGE_UNMASKED,
 }
 
 /**
@@ -104,6 +112,9 @@ class VisibleTargetTracker(
 
     private val activities = LinkedHashMap<String, TrackedActivity>()
 
+    /** Packages excluded from metering right now, e.g. Instagram while a DM screen is on top. */
+    private val maskedPackages = HashSet<String>()
+
     private var screenInteractive = true
     private var keyguardShown = false
     private var logicalNowMs = Long.MIN_VALUE
@@ -121,7 +132,11 @@ class VisibleTargetTracker(
      * observer is willing to interpret. Neither "visible" nor "gone" can be asserted, so
      * the caller must escalate rather than pick one.
      */
-    val hasUnresolved: Boolean get() = activities.values.any { it.packageName in targets && it.unresolved }
+    val hasUnresolved: Boolean
+        get() = activities.values.any { it.packageName in targets && it.packageName !in maskedPackages && it.unresolved }
+
+    /** Whether [packageName] is currently excluded from metering. */
+    fun isMasked(packageName: String): Boolean = packageName in maskedPackages
 
     /**
      * Feed events (in any order) and advance the tracker's notion of "now" to [nowWallMs].
@@ -163,9 +178,27 @@ class VisibleTargetTracker(
         return out
     }
 
+    /**
+     * Mask or unmask a package from the live guard, and put the change on the same event
+     * stream as everything else so a later replay of this interval reaches the same charge.
+     *
+     * A masked target contributes nothing to visibility, so its foreground time is not
+     * charged. This is how Instagram DM time stays free: the accessibility guard reports
+     * "a DM screen is on top" and the coordinator masks Instagram for that interval.
+     */
+    fun observeMask(packageName: String, masked: Boolean, atWallMs: Long): List<VisibilityTransition> {
+        val out = mutableListOf<VisibilityTransition>()
+        if (logicalNowMs == Long.MIN_VALUE) logicalNowMs = atWallMs
+        advanceTo(atWallMs, out)
+        if (masked) maskedPackages.add(packageName) else maskedPackages.remove(packageName)
+        emitIfChanged(atWallMs, out)
+        return out
+    }
+
     /** Drop all activity state, e.g. once a reboot has been detected. */
     fun reset(atWallMs: Long) {
         activities.clear()
+        maskedPackages.clear()
         logicalNowMs = atWallMs
         lastVisible = false
         screenInteractive = true
@@ -192,6 +225,7 @@ class VisibleTargetTracker(
                 unresolved = it.unresolved,
             )
         },
+        maskedPackages = maskedPackages.toList(),
     )
 
     /** Reinstate a previously exported state. Replaces everything this tracker believes. */
@@ -206,6 +240,8 @@ class VisibleTargetTracker(
                 unresolved = activity.unresolved,
             )
         }
+        maskedPackages.clear()
+        maskedPackages.addAll(state.maskedPackages)
         screenInteractive = state.screenInteractive
         keyguardShown = state.keyguardShown
         logicalNowMs = state.logicalNowMs
@@ -255,6 +291,10 @@ class VisibleTargetTracker(
 
             // Nothing is on screen across a shutdown or a fresh start.
             TrackedEventType.DEVICE_SHUTDOWN, TrackedEventType.DEVICE_STARTUP -> activities.clear()
+
+            TrackedEventType.PACKAGE_MASKED -> maskedPackages.add(event.packageName)
+
+            TrackedEventType.PACKAGE_UNMASKED -> maskedPackages.remove(event.packageName)
 
             TrackedEventType.ACTIVITY_RESUMED -> {
                 if (event.packageName !in targets) return
@@ -336,7 +376,9 @@ class VisibleTargetTracker(
     private fun computeVisible(): Boolean {
         if (!screenInteractive || keyguardShown) return false
         return activities.values.any {
-            it.packageName in targets && (it.state == ActivityState.RESUMED || !it.unresolved)
+            it.packageName in targets &&
+                it.packageName !in maskedPackages &&
+                (it.state == ActivityState.RESUMED || !it.unresolved)
         }
     }
 

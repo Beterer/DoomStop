@@ -18,4 +18,9 @@
     <string name="shorts_guard_label">DoomStop Shorts guard</string>
     <string name="shorts_guard_description">Closes the YouTube Shorts player whenever it opens. Ordinary YouTube videos keep working. It only looks at the YouTube app, and only checks whether the Shorts player is on screen; it does not read titles, comments or anything you type. While this is switched off, DoomStop suspends the whole YouTube app.</string>
     <string name="shorts_blocked">Shorts blocked by DoomStop</string>
+
+    <!-- Instagram messaging guard -->
+    <string name="instagram_guard_label">DoomStop messaging guard</string>
+    <string name="instagram_guard_description">Keeps Instagram Direct Messages usable after the daily limit while the feed, reels and explore stay closed, and keeps time spent in DMs from counting against the allowance. It only looks at the Instagram app, and only checks whether a messages screen is on screen; it does not read messages, names or anything you type. While this is switched off, DoomStop suspends the whole Instagram app once the limit is reached.</string>
+    <string name="instagram_scroll_blocked">Only messages are available — daily limit reached</string>
 </resources>

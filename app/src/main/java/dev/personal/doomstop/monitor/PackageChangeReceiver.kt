@@ -48,6 +48,7 @@ class PackageChangeReceiver : BroadcastReceiver() {
             policy.applyEnforcement(
                 suspendTargets = marker.targetsSuspended,
                 suspendYouTube = marker.youtubeSuspended,
+                suspendInstagram = marker.instagramSuspended,
             )
         }
 

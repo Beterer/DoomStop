@@ -27,7 +27,7 @@ class ManualFixtures {
     @Test
     fun suspendTargetsAndLeaveThemSuspended() {
         assumeTrue(policy.isDeviceOwner)
-        val report = policy.applyEnforcement(suspendTargets = true, suspendYouTube = false)
+        val report = policy.applyEnforcement(suspendTargets = true, suspendYouTube = false, suspendInstagram = true)
         println("DOOMSTOP-FIXTURE suspended=${report.installed.map { it.packageName to it.actualSuspended }}")
     }
 

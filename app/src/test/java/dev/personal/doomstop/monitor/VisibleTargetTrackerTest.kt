@@ -330,4 +330,96 @@ class VisibleTargetTrackerTest {
         val fromTheFuture = "9" + TrackerState(true, false, 5_000, true, emptyList()).encode()
         assertNull(TrackerState.decode(fromTheFuture))
     }
+
+    @Test
+    fun `a version-one observer state without the mask field still decodes`() {
+        // An in-place update must not throw away a live observer (which would spuriously
+        // latch recovery) just because the masked-packages field did not exist when it was
+        // written. This is the exact wire form the previous build produced.
+        val unit = Char(31)
+        val legacy = buildString {
+            append(1).append(unit)        // version 1
+            append(1).append(unit)        // screenInteractive
+            append(0).append(unit)        // keyguardShown
+            append(4_000).append(unit)    // logicalNowMs
+            append(1)                     // lastVisible, five-field header, no mask field
+        }
+        val decoded = requireNotNull(TrackerState.decode(legacy))
+        assertTrue(decoded.maskedPackages.isEmpty())
+        assertEquals(4_000L, decoded.logicalNowMs)
+    }
+
+    // -- masking a package out of metering (Instagram DMs) --------------------------------
+
+    @Test
+    fun `masking a visible target stops it being visible, unmasking restores it`() {
+        val tracker = tracker()
+        tracker.apply(listOf(event(1_000, instagram, TrackedEventType.ACTIVITY_RESUMED)), 1_500)
+        assertTrue(tracker.isVisible)
+
+        val hidden = tracker.observeMask(instagram, masked = true, atWallMs = 2_000)
+        assertFalse("a masked target is not metered", tracker.isVisible)
+        assertTrue(tracker.isMasked(instagram))
+        assertEquals(1, hidden.size)
+        assertEquals(2_000L, hidden.single().atWallMs)
+
+        val shown = tracker.observeMask(instagram, masked = false, atWallMs = 3_000)
+        assertTrue("unmasking brings the still-open app back", tracker.isVisible)
+        assertEquals(3_000L, shown.single().atWallMs)
+    }
+
+    @Test
+    fun `masking through the event stream replays identically`() {
+        val tracker = tracker()
+        val batch = listOf(
+            event(1_000, instagram, TrackedEventType.ACTIVITY_RESUMED),
+            event(2_000, instagram, TrackedEventType.PACKAGE_MASKED),
+            event(4_000, instagram, TrackedEventType.PACKAGE_UNMASKED),
+        )
+        val transitions = tracker.apply(batch, 5_000)
+        assertTrue(tracker.isVisible)
+        // visible at 1_000, masked (not visible) at 2_000, visible again at 4_000.
+        assertEquals(listOf(1_000L to true, 2_000L to false, 4_000L to true), transitions.map { it.atWallMs to it.visible })
+
+        // Replaying the same window nets out to no change.
+        val replay = tracker.apply(batch, 5_000)
+        assertEquals(0, replay.sumOf { if (it.visible) 1 else -1 })
+        assertTrue(tracker.isVisible)
+    }
+
+    @Test
+    fun `a masked target is never unresolved`() {
+        val tracker = tracker(pausedVisibleMs = 5_000)
+        tracker.apply(listOf(event(1_000, instagram, TrackedEventType.ACTIVITY_RESUMED)), 1_500)
+        tracker.observeMask(instagram, masked = true, atWallMs = 1_800)
+        // Paused and never stopped, well past the deadline -- but masked, so no recovery.
+        tracker.apply(listOf(event(2_000, instagram, TrackedEventType.ACTIVITY_PAUSED)), 20_000)
+        assertFalse(tracker.isVisible)
+        assertFalse("masking suppresses the unresolved escalation", tracker.hasUnresolved)
+    }
+
+    @Test
+    fun `a mask survives a restart`() {
+        val before = tracker()
+        before.apply(listOf(event(1_000, instagram, TrackedEventType.ACTIVITY_RESUMED)), 1_500)
+        before.observeMask(instagram, masked = true, atWallMs = 2_000)
+
+        val after = tracker()
+        after.restore(requireNotNull(TrackerState.decode(before.exportState().encode())))
+        assertTrue("the exemption is remembered across the restart", after.isMasked(instagram))
+        assertFalse(after.isVisible)
+
+        after.observeMask(instagram, masked = false, atWallMs = 3_000)
+        assertTrue(after.isVisible)
+    }
+
+    @Test
+    fun `masked observer state round-trips through its encoding`() {
+        val tracker = tracker()
+        tracker.apply(listOf(event(1_000, instagram, TrackedEventType.ACTIVITY_RESUMED)), 1_500)
+        tracker.observeMask(instagram, masked = true, atWallMs = 2_000)
+        val state = tracker.exportState()
+        assertEquals(listOf(instagram), state.maskedPackages)
+        assertEquals(state, TrackerState.decode(state.encode()))
+    }
 }
