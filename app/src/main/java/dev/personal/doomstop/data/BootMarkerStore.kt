@@ -45,6 +45,16 @@ class BootMarkerStore(context: Context) {
     val youtubeSuspended: Boolean
         get() = prefs.getBoolean(KEY_YOUTUBE_SUSPENDED, false)
 
+    /**
+     * Whether Instagram was fully suspended (as opposed to left in DM-only messaging mode)
+     * when the device went down. Defaults to true -- the SAFE value -- so a build that never
+     * wrote it, or a marker read before the messaging guard could run, keeps Instagram
+     * suspended rather than open. Faithful re-assertion (a package change) uses this; the
+     * locked-boot path deliberately hard-suspends instead, because the guard cannot run yet.
+     */
+    val instagramSuspended: Boolean
+        get() = prefs.getBoolean(KEY_INSTAGRAM_SUSPENDED, true)
+
     /** Wall-clock time the marker was last written, for measuring the real boot gap. */
     val updatedAtWallMs: Long
         get() = prefs.getLong(KEY_UPDATED_AT, 0L)
@@ -55,16 +65,25 @@ class BootMarkerStore(context: Context) {
      * commit synchronously -- which matters, because this value has to survive whatever
      * takes the device down.
      */
-    fun record(protectionEnabled: Boolean, targetsSuspended: Boolean, youtubeSuspended: Boolean, nowWallMs: Long) {
+    fun record(
+        protectionEnabled: Boolean,
+        targetsSuspended: Boolean,
+        youtubeSuspended: Boolean,
+        instagramSuspended: Boolean,
+        nowWallMs: Long,
+    ) {
         if (this.protectionEnabled == protectionEnabled &&
             this.targetsSuspended == targetsSuspended &&
             this.youtubeSuspended == youtubeSuspended &&
-            prefs.contains(KEY_YOUTUBE_SUSPENDED)
+            this.instagramSuspended == instagramSuspended &&
+            prefs.contains(KEY_YOUTUBE_SUSPENDED) &&
+            prefs.contains(KEY_INSTAGRAM_SUSPENDED)
         ) return
         prefs.edit(commit = true) {
             putBoolean(KEY_PROTECTION_ENABLED, protectionEnabled)
             putBoolean(KEY_TARGETS_SUSPENDED, targetsSuspended)
             putBoolean(KEY_YOUTUBE_SUSPENDED, youtubeSuspended)
+            putBoolean(KEY_INSTAGRAM_SUSPENDED, instagramSuspended)
             putLong(KEY_UPDATED_AT, nowWallMs)
         }
     }
@@ -74,6 +93,7 @@ class BootMarkerStore(context: Context) {
         const val KEY_PROTECTION_ENABLED = "protection_enabled"
         const val KEY_TARGETS_SUSPENDED = "targets_suspended"
         const val KEY_YOUTUBE_SUSPENDED = "youtube_suspended"
+        const val KEY_INSTAGRAM_SUSPENDED = "instagram_suspended"
         const val KEY_UPDATED_AT = "updated_at_wall_ms"
     }
 }

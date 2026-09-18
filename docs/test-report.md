@@ -738,3 +738,78 @@ signer certificate `f6bfa1d3…c0f1` as in section 7.4.
 
 **Not measured on the phone:** carryover across a real midnight, including the thirty-second
 estimate; a recovery outstanding at midnight; and the status-screen row.
+
+---
+
+## 12. Instagram messaging mode (0.4.0), 2026-09-17
+
+Instagram Direct Messages are made free of charge and kept usable past the limit, while the
+feed, reels and explore are not. The mechanism is the inverse of the Shorts guard: an
+accessibility service scoped to Instagram reports whether a DM screen is on top, and
+
+  - the coordinator masks Instagram out of metering while a DM screen is showing, so DM time
+    never counts against the allowance — whether or not the limit has been reached; and
+  - once the allowance is exhausted, Instagram is left runnable instead of suspended, and the
+    guard runs a short launch timer (`InstagramGuard.LAUNCH_GRACE_MS`, 3 s): reach the inbox
+    and it stays open, otherwise it presses Back and then Home. With the guard off at the
+    limit, Instagram is suspended outright, the same teeth as `youtubeMustBeSuspended`.
+
+### What was tested, and how
+
+| Claim | Evidence | Result |
+|---|---|---|
+| The launch-timer and suspension rules are correct | `InstagramGuardTest` (JVM) | pass |
+| The allow-list fires on the measured inbox and thread IDs and stays silent on the feed | `InstagramGuardTest` (JVM, measured fixtures) | pass |
+| A masked package is excluded from visibility and metering, survives a restart, and never escalates to recovery | `VisibleTargetTrackerTest` (JVM) | pass |
+| The observer state with a mask round-trips, and a pre-mask (version 1) state still decodes | `VisibleTargetTrackerTest` (JVM) | pass |
+| DM time is not charged; scrolling after leaving DMs is charged again | `CoordinatorRegressionTest` (instrumented) | **not run** — needs the emulator |
+| At the limit Instagram stays open for messaging while other targets are suspended, and falls back to a hard suspension when the guard is switched off | `CoordinatorRegressionTest` (instrumented) | **not run** — needs the emulator |
+| Instagram is split out of the bulk suspension and follows its own flag | `PolicyControllerTest` (device owner) | **not run** |
+
+The whole module compiles (`assembleDebug`), lint passes with no errors, and the JVM unit
+suite (129 tests) passes. The instrumented additions compile but have not been executed on
+`doomstop36` or any device in this cycle.
+
+### 12.1 The DM view IDs, measured on the phone, 2026-09-17
+
+`InstagramGuard.DM_SCREEN_VIEW_IDS` is no longer a placeholder. The IDs were captured on the
+Pixel 9 (tokay), Instagram **447.0.0.55.81**, with the app still device owner. The measurement
+turned up a wrinkle worth recording:
+
+- **The DM inbox** is the `direct_tab` pane inside `MainTabActivity`. A clean
+  `uiautomator dump` of the inbox contained `direct_inbox_action_bar` and
+  `inbox_refreshable_thread_list_recyclerview`; the same clean dump of the home feed did not.
+  So accessibility exposes those two only while the inbox is actually on screen, even though
+  `MainTabActivity` keeps the inbox fragment alive off-screen (the raw view tree via
+  `dumpsys activity` shows it as `VISIBLE` on every tab; accessibility prunes it — the feed
+  dump is the proof). The feed does carry the `direct_tab` bottom-nav icon, which is
+  deliberately **not** in the ID set, so the feed still reads as not-DMs.
+- **An open thread** is a separate `com.instagram.modal.ModalActivity`, and that window is
+  **FLAG_SECURE**: it is black in a screenshot, and `uiautomator dump` returns
+  `ERROR: null root node` for it (`dumpsys window` confirms `fl=… SECURE …`). Its view IDs had
+  to be read from the app's own view hierarchy (`adb shell dumpsys activity <component>`, which
+  FLAG_SECURE does not block). The thread's core views are `message_list`,
+  `row_thread_composer_edittext`, `direct_thread_header` and `thread_view_root`.
+
+**Open risk this exposes.** FLAG_SECURE blocks screenshots, not accessibility (TalkBack reads
+secure windows), so the bound guard is *expected* to receive the thread's nodes at runtime —
+but that has **not been proven end to end**, because 0.4.0 cannot be installed over the
+release-signed device owner on the phone, and `uiautomator`'s null root is a caution, not a
+guarantee. If a bound `AccessibilityService` turns out not to see the secure thread, the guard
+would bounce the user from an open thread back to the inbox (which it does recognise) — the
+inbox stays usable, individual conversations would not. This is the first thing to verify when
+0.4.0 runs on a throwaway AVD with a test account, or briefly with TalkBack on the phone.
+
+The measured fixtures are pinned in `InstagramGuardTest` (inbox, thread, feed). The rules and
+allow-list matching now run against real IDs rather than synthetic ones.
+
+### Not measured, and load-bearing
+
+- **Nothing has run on the phone or the emulator.** The end-to-end behaviour — that DMs stay
+  usable and free while the feed is closed after the limit, the exact feel of the 3 s grace,
+  and the launch/return timing — is unverified. The mask's thirty-second settle boundary at
+  DM enter/exit, and the brief unguarded grace on each open, are described but not observed.
+- **Boot behaviour is by construction, not measured.** At locked boot Instagram is
+  hard-suspended whenever the other targets are, because the guard cannot run before first
+  unlock; the post-unlock tick relaxes it once the guard binds. This mirrors the Shorts
+  guard's boot handling but has not been exercised here.

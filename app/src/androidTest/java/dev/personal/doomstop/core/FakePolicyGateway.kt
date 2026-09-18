@@ -48,8 +48,13 @@ class FakePolicyGateway(
     var relinquishCalls = 0
         private set
 
-    override fun applyEnforcement(suspendTargets: Boolean, suspendYouTube: Boolean): SuspensionReport {
-        val outcomes = TargetPackages.ALL.map { outcome(it, suspendTargets) } +
+    override fun applyEnforcement(
+        suspendTargets: Boolean,
+        suspendYouTube: Boolean,
+        suspendInstagram: Boolean,
+    ): SuspensionReport {
+        val outcomes = (TargetPackages.ALL - TargetPackages.INSTAGRAM).map { outcome(it, suspendTargets) } +
+            outcome(TargetPackages.INSTAGRAM, suspendInstagram) +
             BlockedBrowsers.ALL.map { outcome(it, true) } +
             outcome(ShortsGuard.YOUTUBE_PACKAGE, suspendYouTube)
         return SuspensionReport(outcomes)

@@ -179,6 +179,26 @@
                 android:resource="@xml/shorts_guard_service" />
         </service>
 
+        <!--
+          Instagram messaging guard. Same contract as the Shorts guard: only the system can
+          bind it, its configuration limits it to events from the Instagram package, and it
+          has to be switched on by hand under Settings > Accessibility. While it is off,
+          Instagram is suspended outright once the daily limit is reached; while it is on,
+          Instagram stays open in DM-only mode after the limit and DM time is not counted.
+        -->
+        <service
+            android:name=".monitor.InstagramGuardService"
+            android:exported="false"
+            android:label="@string/instagram_guard_label"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/instagram_guard_service" />
+        </service>
+
     </application>
 
 </manifest>

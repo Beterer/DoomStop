@@ -86,6 +86,18 @@ fun SetupScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
+            if (status.instagramGuard.instagramInstalled && !status.instagramGuard.connected) {
+                Button(onClick = onOpenAccessibilitySettings, modifier = Modifier.fillMaxWidth()) {
+                    Text("Switch on the messaging guard")
+                }
+                Text(
+                    "Settings > Accessibility > DoomStop messaging guard. It keeps DMs usable after " +
+                        "the limit and stops DM time counting. Until it is on, Instagram is suspended " +
+                        "outright once the limit is reached.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
             if (!status.exactAlarmsAllowed) {
                 OutlinedButton(onClick = onAllowExactAlarms, modifier = Modifier.fillMaxWidth()) {
                     Text("Allow exact alarms (optional)")
@@ -105,6 +117,7 @@ fun SetupScreen(
         DeviceOwnerCard(status)
         ChromePolicyCard(status)
         ShortsGuardCard(status)
+        InstagramGuardCard(status)
         SuspensionCard(status)
         SelfProtectionCard(status)
         MonitorCard(status)
@@ -210,6 +223,33 @@ private fun ShortsGuardCard(status: LimiterStatus) {
                 "own screen elements, and a YouTube update can rename them without any error " +
                 "showing here. The firm part is the fallback: while the guard is not running, " +
                 "the whole YouTube app is suspended.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+/**
+ * The inverse of the Shorts guard: it keeps Direct Messages usable and free of charge, and
+ * closes everything else once the limit is reached. Best-effort and, being an allow-list,
+ * more fragile — spelled out on the card.
+ */
+@Composable
+private fun InstagramGuardCard(status: LimiterStatus) {
+    val guard = status.instagramGuard
+    SectionCard("Instagram messaging guard") {
+        StatRow("Instagram installed", if (guard.instagramInstalled) "yes" else "no")
+        StatRow("Switched on in Settings", if (guard.enabledInSettings) "yes" else "no")
+        StatRow("Running", if (guard.connected) "yes" else "no")
+        StatRow("Messaging-only mode active", if (guard.messagingModeActive) "yes" else "no")
+        StatRow("Instagram suspended because the guard is off", if (guard.instagramSuspended) "yes" else "no")
+        Text(
+            "Keeps Direct Messages usable after the limit and stops DM time counting, while the " +
+                "feed, reels and explore are closed. Best-effort, and more fragile than the Shorts " +
+                "guard because it recognises the messages screens by Instagram's own view names: an " +
+                "update can rename them, and it would then close DMs too rather than let scrolling " +
+                "through. The firm part is the fallback: with the guard off, Instagram is suspended " +
+                "outright once the limit is reached.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )

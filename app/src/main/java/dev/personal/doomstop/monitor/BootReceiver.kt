@@ -51,10 +51,14 @@ class BootReceiver : BroadcastReceiver() {
             Log.w(TAG, "locked boot: not device owner, nothing can be enforced")
             return
         }
-        // Re-assert exactly what was in force at shutdown, erring toward suspended.
+        // Re-assert exactly what was in force at shutdown, erring toward suspended. Instagram
+        // is hard-suspended whenever the other targets are: its DM-only mode depends on the
+        // accessibility guard, which cannot run before the first unlock, so leaving it open
+        // here would be an unguarded hole. The post-unlock tick relaxes it once the guard is up.
         val report = policy.applyEnforcement(
             suspendTargets = marker.targetsSuspended,
             suspendYouTube = marker.youtubeSuspended,
+            suspendInstagram = marker.targetsSuspended,
         )
         Log.i(TAG, "locked boot: suspension re-applied, allApplied=${report.allApplied}")
     }

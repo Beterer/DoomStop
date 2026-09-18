@@ -49,6 +49,34 @@ data class ShortsGuardStatus(
 }
 
 /**
+ * The Instagram messaging guard as the platform reports it, and the verdict of the rules
+ * built on it.
+ *
+ * [messagingModeActive] is true when the allowance is exhausted and the guard is available,
+ * so Instagram is left runnable in DM-only mode instead of suspended -- this is what the
+ * accessibility service reads to decide whether to enforce the launch timer. [instagram
+ * Suspended] is what the suspension rule asked for this pass, not a read-back; whether the
+ * platform honoured it is in [LimiterStatus.suspension] like every other package.
+ */
+data class InstagramGuardStatus(
+    val instagramInstalled: Boolean,
+    val enabledInSettings: Boolean,
+    val connected: Boolean,
+    val messagingModeActive: Boolean,
+    val instagramSuspended: Boolean,
+) {
+    companion object {
+        val UNKNOWN = InstagramGuardStatus(
+            instagramInstalled = false,
+            enabledInSettings = false,
+            connected = false,
+            messagingModeActive = false,
+            instagramSuspended = false,
+        )
+    }
+}
+
+/**
  * Everything the UI and the notification need, computed once per tick by the coordinator.
  *
  * Deliberately explicit about capability: [protectionActive] is only true when every
@@ -79,6 +107,7 @@ data class LimiterStatus(
     val suspension: SuspensionReport?,
     val chrome: ChromePolicyReport?,
     val shortsGuard: ShortsGuardStatus,
+    val instagramGuard: InstagramGuardStatus,
     val selfProtection: SelfProtectionReport?,
     val activeRestrictions: Set<String>,
     val tracker: TrackerSnapshot?,
@@ -175,6 +204,20 @@ data class LimiterStatus(
                     "Switch on DoomStop Shorts guard in Settings > Accessibility"
                 },
             ),
+            // Not part of protectionActive either: with the guard off Instagram is suspended
+            // once the limit is reached, so scrolling stays unavailable regardless. This line
+            // says whether messaging survives the limit.
+            ReadinessItem(
+                label = "Instagram messaging guard running",
+                satisfied = !instagramGuard.instagramInstalled || instagramGuard.connected,
+                remedy = if (instagramGuard.instagramSuspended) {
+                    "Off, so once the limit is reached the whole Instagram app is suspended. Switch " +
+                        "on DoomStop messaging guard in Settings > Accessibility to keep DMs after the limit"
+                } else {
+                    "Switch on DoomStop messaging guard in Settings > Accessibility to keep DMs " +
+                        "after the limit and to stop DM time counting"
+                },
+            ),
         )
 
     /** Lines that must be green before enforcement can be switched on. */
@@ -209,6 +252,7 @@ data class LimiterStatus(
             suspension = null,
             chrome = null,
             shortsGuard = ShortsGuardStatus.UNKNOWN,
+            instagramGuard = InstagramGuardStatus.UNKNOWN,
             selfProtection = null,
             activeRestrictions = emptySet(),
             tracker = null,

@@ -15,6 +15,7 @@ import dev.personal.doomstop.domain.ClockSource
 import dev.personal.doomstop.domain.DayBoundary
 import dev.personal.doomstop.domain.EnforcementReason
 import dev.personal.doomstop.monitor.AppPermissions
+import dev.personal.doomstop.monitor.InstagramGuardProbe
 import dev.personal.doomstop.monitor.TrackedEvent
 import dev.personal.doomstop.monitor.TrackedEventType
 import dev.personal.doomstop.monitor.UsageReadResult
@@ -92,6 +93,15 @@ private class ScriptedUsage : UsageSource {
     }
 }
 
+/** A stand-in for the Instagram messaging guard whose state the test drives directly. */
+private class FakeInstagramGuardProbe : InstagramGuardProbe {
+    override var connected: Boolean = false
+    var enabled: Boolean = false
+    var inDm: Boolean = false
+    override fun enabledInSettings(): Boolean = enabled
+    override fun inDirectMessages(): Boolean = connected && inDm
+}
+
 /**
  * The regressions from the code review, at the level they actually occurred: several
  * sequential passes against persisted state, and a coordinator rebuilt from that state the
@@ -114,6 +124,8 @@ class CoordinatorRegressionTest {
     private val extensionMs = 10_000L
     private val zone = ZoneId.of("Europe/Bucharest")
     private val instagram = TargetPackages.INSTAGRAM
+    private val reddit = TargetPackages.REDDIT
+    private val instagramGuard = FakeInstagramGuardProbe()
 
     @Before
     fun setUp() = runTest {
@@ -168,6 +180,7 @@ class CoordinatorRegressionTest {
         bootMarker = BootMarkerStore(context),
         clock = clock,
         deadlines = DeadlineScheduler(context),
+        instagramGuardProbe = instagramGuard,
     ).also { it.serviceRunning = true }
 
     /** Exactly what a restarted process does: same database, brand new objects in memory. */
@@ -186,6 +199,52 @@ class CoordinatorRegressionTest {
     private suspend fun settledChargeMs(dayId: String? = null): Long {
         val day = dayId ?: coordinator.status.value.dayId
         return database.dao().day(day)?.chargedMs ?: 0L
+    }
+
+    // -- Instagram messaging mode ------------------------------------------------------------
+
+    @Test
+    fun instagramDmTimeIsNotChargedAndScrollingAfterwardsIs() = runTest {
+        // The guard is up and reports that a DM screen is on top.
+        instagramGuard.connected = true
+        instagramGuard.enabled = true
+        instagramGuard.inDm = true
+        coordinator.tick(Trigger.POLL) // persists the mask before Instagram is even on screen
+
+        clock.advance(2_000)
+        usage.resume(instagram, clock.wallMs) // Instagram opens, already masked as DMs
+        runFor(180_000, steps = 18)
+        assertEquals("time spent in DMs is never metered", 0L, settledChargeMs())
+
+        // Leave the messages screen: the same still-open Instagram is now ordinary scrolling.
+        instagramGuard.inDm = false
+        runFor(180_000, steps = 18)
+        assertTrue("scrolling after leaving DMs is metered again", settledChargeMs() > 20_000L)
+    }
+
+    @Test
+    fun atTheLimitInstagramStaysOpenForMessagingWhileOtherTargetsAreSuspended() = runTest {
+        instagramGuard.connected = true
+        instagramGuard.enabled = true
+        instagramGuard.inDm = false // scrolling, so it meters and burns the allowance
+
+        usage.resume(instagram, clock.wallMs)
+        runFor(200_000, steps = 20) // past the 120 s allowance
+
+        val exhausted = coordinator.status.value
+        assertEquals(EnforcementReason.ALLOWANCE_EXHAUSTED, exhausted.enforcement.reason)
+        assertTrue("the guard keeps Instagram open in DM-only mode", exhausted.instagramGuard.messagingModeActive)
+        assertEquals("Instagram is not suspended while the guard watches it", false, policy.suspended[instagram])
+        assertEquals("every other target is suspended at the limit", true, policy.suspended[reddit])
+
+        // Switch the guard off: messaging mode is unsafe, so Instagram is hard-suspended.
+        instagramGuard.connected = false
+        instagramGuard.enabled = false
+        coordinator.tick(Trigger.GUARD_CHANGE)
+
+        val guardOff = coordinator.status.value
+        assertFalse("no messaging mode without the guard", guardOff.instagramGuard.messagingModeActive)
+        assertEquals("Instagram falls back to a hard suspension", true, policy.suspended[instagram])
     }
 
     // -- F1: a lost interval stays lost until it is acknowledged ----------------------------

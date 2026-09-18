@@ -8,6 +8,7 @@ import dev.personal.doomstop.admin.HardeningOptions
 import dev.personal.doomstop.admin.SelfProtectionReport
 import dev.personal.doomstop.admin.SuspensionReport
 import dev.personal.doomstop.config.BlockedSites
+import dev.personal.doomstop.config.InstagramGuard
 import dev.personal.doomstop.config.ShortsGuard
 import dev.personal.doomstop.config.TargetPackages
 import dev.personal.doomstop.data.BootMarkerStore
@@ -34,8 +35,10 @@ import dev.personal.doomstop.domain.RecoveryRequest
 import dev.personal.doomstop.domain.SettledWindow
 import dev.personal.doomstop.domain.TickInput
 import dev.personal.doomstop.domain.VisibilityTransition
+import dev.personal.doomstop.monitor.AndroidInstagramGuardProbe
 import dev.personal.doomstop.monitor.AndroidShortsGuardProbe
 import dev.personal.doomstop.monitor.AppPermissions
+import dev.personal.doomstop.monitor.InstagramGuardProbe
 import dev.personal.doomstop.monitor.ShortsGuardProbe
 import dev.personal.doomstop.monitor.TrackedEvent
 import dev.personal.doomstop.monitor.TrackedEventType
@@ -114,6 +117,7 @@ class LimiterCoordinator(
     private val clock: ClockSource,
     private val deadlines: DeadlineScheduler,
     private val guardProbe: ShortsGuardProbe = AndroidShortsGuardProbe(context),
+    private val instagramGuardProbe: InstagramGuardProbe = AndroidInstagramGuardProbe(context),
 ) {
 
     private val mutex = Mutex()
@@ -126,11 +130,15 @@ class LimiterCoordinator(
     /** Last enforcement state actually pushed to the platform, to avoid a DPM call per second. */
     private var lastAppliedSuspendTargets: Boolean? = null
     private var lastAppliedSuspendYouTube: Boolean? = null
+    private var lastAppliedSuspendInstagram: Boolean? = null
     private var lastSuspensionReport: SuspensionReport? = null
 
     /** When this process first saw the Shorts guard disconnected; null while it is connected. */
     private var guardNotConnectedSinceElapsedMs: Long? = null
     private var lastShortsGuard: ShortsGuardStatus? = null
+    /** The same, for the Instagram messaging guard. */
+    private var instagramGuardNotConnectedSinceElapsedMs: Long? = null
+    private var lastInstagramGuard: InstagramGuardStatus? = null
     private var lastEnforcementSyncElapsedMs = 0L
 
     private var lastChromeReport: ChromePolicyReport? = null
@@ -238,7 +246,14 @@ class LimiterCoordinator(
         // next time this window is recomputed.
         val correction = liveScreenCorrection(acceptedNowMs)
         tailTransitions += correction.transitions
-        val newEvents = fresh + correction.events
+
+        // Instagram DM time is never charged. The guard reports whether a DM screen is on top;
+        // that observation masks Instagram in the observer and is written onto the same event
+        // stream, so a later replay of this interval reaches the same (un)charged result.
+        val maskCorrection = instagramMaskCorrection(settingsEntity.setupCompleted, acceptedNowMs)
+        tailTransitions += maskCorrection.transitions
+
+        val newEvents = fresh + correction.events + maskCorrection.events
 
         val accounting = BudgetEngine.account(
             previous = previous,
@@ -316,6 +331,7 @@ class LimiterCoordinator(
 
         val enforcing = settingsEntity.setupCompleted && !settingsEntity.maintenanceMode
         val shortsGuard = evaluateShortsGuard(enforcing, nowElapsedMs, acceptedNowMs)
+        val instagramGuard = evaluateInstagramGuard(decision, nowElapsedMs, acceptedNowMs)
 
         if (enforcing) {
             // A package change must re-apply policy immediately rather than wait for the
@@ -325,7 +341,14 @@ class LimiterCoordinator(
                 trigger == Trigger.BOOT ||
                 trigger == Trigger.ADMIN_ACTION ||
                 trigger == Trigger.GUARD_CHANGE
-            syncEnforcement(decision.suspendTargets, shortsGuard.youtubeSuspended, nowElapsedMs, acceptedNowMs, force)
+            syncEnforcement(
+                suspendTargets = decision.suspendTargets,
+                suspendYouTube = shortsGuard.youtubeSuspended,
+                suspendInstagram = instagramGuard.instagramSuspended,
+                nowElapsedMs = nowElapsedMs,
+                nowWallMs = acceptedNowMs,
+                force = force,
+            )
             syncChromePolicy(nowElapsedMs, acceptedNowMs, force)
         }
 
@@ -333,6 +356,7 @@ class LimiterCoordinator(
             protectionEnabled = enforcing,
             targetsSuspended = decision.suspendTargets,
             youtubeSuspended = shortsGuard.youtubeSuspended,
+            instagramSuspended = instagramGuard.instagramSuspended,
             nowWallMs = acceptedNowMs,
         )
 
@@ -341,7 +365,7 @@ class LimiterCoordinator(
             reportedWallMs,
         )
 
-        return publish(settingsEntity, settings, boundary, today, decision, checkpoint, health, shortsGuard, acceptedNowMs)
+        return publish(settingsEntity, settings, boundary, today, decision, checkpoint, health, shortsGuard, instagramGuard, acceptedNowMs)
     }
 
     /**
@@ -412,6 +436,80 @@ class LimiterCoordinator(
         }
         lastShortsGuard = status
         return status
+    }
+
+    /**
+     * The Instagram-guard rule for this pass, deciding whether Instagram is left in DM-only
+     * messaging mode or suspended outright.
+     *
+     * Messaging mode is only ever offered when the allowance is simply exhausted -- a healthy
+     * monitor with a clean history that has run out of time. Any other reason to suspend
+     * targets (an unhealthy monitor, an outstanding recovery) suspends Instagram along with
+     * everything else, because neither the guard nor the DM exemption can be trusted then.
+     */
+    private suspend fun evaluateInstagramGuard(
+        decision: EnforcementDecision,
+        nowElapsedMs: Long,
+        nowWallMs: Long,
+    ): InstagramGuardStatus {
+        val connected = instagramGuardProbe.connected
+        val enabled = instagramGuardProbe.enabledInSettings()
+        if (connected) {
+            instagramGuardNotConnectedSinceElapsedMs = null
+        } else if (instagramGuardNotConnectedSinceElapsedMs == null) {
+            instagramGuardNotConnectedSinceElapsedMs = nowElapsedMs
+        }
+        val notConnectedForMs = instagramGuardNotConnectedSinceElapsedMs?.let { nowElapsedMs - it } ?: 0L
+
+        val limitReached = decision.suspendTargets &&
+            decision.reason == EnforcementReason.ALLOWANCE_EXHAUSTED
+        val suspendForOtherReason = decision.suspendTargets && !limitReached
+        val instagramSuspended = suspendForOtherReason ||
+            InstagramGuard.instagramMustBeSuspended(limitReached, enabled, connected, notConnectedForMs)
+
+        val status = InstagramGuardStatus(
+            instagramInstalled = policy.isInstalled(InstagramGuard.INSTAGRAM_PACKAGE),
+            enabledInSettings = enabled,
+            connected = connected,
+            messagingModeActive = limitReached && !instagramSuspended,
+            instagramSuspended = instagramSuspended,
+        )
+        if (limitReached && status.instagramSuspended && status.instagramInstalled &&
+            lastInstagramGuard?.instagramSuspended != true
+        ) {
+            recordDiagnostic(
+                type = "instagram_guard_off",
+                detail = if (enabled) "guard enabled but not running" else "guard switched off in Settings",
+                nowWallMs = nowWallMs,
+            )
+        }
+        lastInstagramGuard = status
+        return status
+    }
+
+    /**
+     * Mask or unmask Instagram for metering, from the guard's live DM signal, as both an
+     * immediate correction and a replayable event -- the same shape as [liveScreenCorrection].
+     * Nothing is written while the observer already agrees, so this is a handful of rows a day.
+     *
+     * This is what keeps Direct Messages free of charge regardless of the allowance: while a
+     * DM screen is on top the Instagram package contributes nothing to visibility, so its
+     * foreground time is not metered. Gated on setup being complete, so pre-setup metering is
+     * left exactly as it was.
+     */
+    private fun instagramMaskCorrection(setupCompleted: Boolean, atWallMs: Long): ScreenCorrection {
+        val maskWanted = setupCompleted && instagramGuardProbe.inDirectMessages()
+        if (tracker.isMasked(InstagramGuard.INSTAGRAM_PACKAGE) == maskWanted) {
+            return ScreenCorrection(emptyList(), emptyList())
+        }
+        val transitions = tracker.observeMask(InstagramGuard.INSTAGRAM_PACKAGE, maskWanted, atWallMs)
+        val event = TrackedEvent(
+            atWallMs,
+            InstagramGuard.INSTAGRAM_PACKAGE,
+            MASK_OBSERVATION_CLASS,
+            if (maskWanted) TrackedEventType.PACKAGE_MASKED else TrackedEventType.PACKAGE_UNMASKED,
+        )
+        return ScreenCorrection(transitions, listOf(event))
     }
 
     /**
@@ -541,18 +639,22 @@ class LimiterCoordinator(
     private suspend fun syncEnforcement(
         suspendTargets: Boolean,
         suspendYouTube: Boolean,
+        suspendInstagram: Boolean,
         nowElapsedMs: Long,
         nowWallMs: Long,
         force: Boolean,
     ) {
-        val changed = lastAppliedSuspendTargets != suspendTargets || lastAppliedSuspendYouTube != suspendYouTube
+        val changed = lastAppliedSuspendTargets != suspendTargets ||
+            lastAppliedSuspendYouTube != suspendYouTube ||
+            lastAppliedSuspendInstagram != suspendInstagram
         val due = nowElapsedMs - lastEnforcementSyncElapsedMs >= ENFORCEMENT_RESYNC_MS
         if (!force && !changed && !due) return
 
         recordSuspensionLedger(nowWallMs)
-        val report = policy.applyEnforcement(suspendTargets, suspendYouTube)
+        val report = policy.applyEnforcement(suspendTargets, suspendYouTube, suspendInstagram)
         lastAppliedSuspendTargets = suspendTargets
         lastAppliedSuspendYouTube = suspendYouTube
+        lastAppliedSuspendInstagram = suspendInstagram
         lastSuspensionReport = report
         lastEnforcementSyncElapsedMs = nowElapsedMs
 
@@ -863,10 +965,12 @@ class LimiterCoordinator(
             protectionEnabled = false,
             targetsSuspended = false,
             youtubeSuspended = false,
+            instagramSuspended = false,
             nowWallMs = nowWallMs,
         )
         lastAppliedSuspendTargets = null
         lastAppliedSuspendYouTube = null
+        lastAppliedSuspendInstagram = null
         lastChromeReport = null
 
         val stages = mutableListOf<RestoreStage>()
@@ -917,6 +1021,7 @@ class LimiterCoordinator(
             dao.upsertSettings(settings.copy(maintenanceMode = false))
             lastAppliedSuspendTargets = null
             lastAppliedSuspendYouTube = null
+            lastAppliedSuspendInstagram = null
             lastChromeReport = null
             recordDiagnostic("maintenance_cancelled", "enforcement resumed", clock.wallTimeMs())
         }
@@ -1114,6 +1219,7 @@ class LimiterCoordinator(
         checkpoint: Checkpoint,
         health: MonitorHealth,
         shortsGuard: ShortsGuardStatus,
+        instagramGuard: InstagramGuardStatus,
         nowWallMs: Long,
     ): LimiterStatus {
         val status = LimiterStatus(
@@ -1138,6 +1244,7 @@ class LimiterCoordinator(
             suspension = lastSuspensionReport,
             chrome = lastChromeReport,
             shortsGuard = shortsGuard,
+            instagramGuard = instagramGuard,
             selfProtection = currentSelfProtection(
                 requested = settingsEntity.setupCompleted && !settingsEntity.maintenanceMode,
             ),
@@ -1170,6 +1277,9 @@ class LimiterCoordinator(
         /** Synthetic events carrying a live screen observation into the replayable stream. */
         private const val LIVE_OBSERVATION_PACKAGE = "android"
         private const val LIVE_OBSERVATION_CLASS = "doomstop.live"
+
+        /** Class name on the synthetic mask/unmask events for Instagram DM exemption. */
+        private const val MASK_OBSERVATION_CLASS = "doomstop.mask"
 
         const val LEDGER_CHROME_BLOCKLIST = "chrome.${BlockedSites.KEY_URL_BLOCKLIST}"
         const val LEDGER_SUSPENDED_PREFIX = "suspended."

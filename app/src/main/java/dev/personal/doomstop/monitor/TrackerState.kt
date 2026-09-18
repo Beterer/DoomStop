@@ -30,6 +30,12 @@ data class TrackerState(
     val logicalNowMs: Long,
     val lastVisible: Boolean,
     val activities: List<TrackedActivityState>,
+    /**
+     * Packages temporarily excluded from metering, e.g. Instagram while a DM screen is on
+     * top. Written into the header so the exemption survives a restart the same way the rest
+     * of the observer does; empty for any state written before this field existed.
+     */
+    val maskedPackages: List<String> = emptyList(),
 ) {
 
     fun encode(): String = buildString {
@@ -37,7 +43,8 @@ data class TrackerState(
         append(screenInteractive.asFlag()).append(UNIT)
         append(keyguardShown.asFlag()).append(UNIT)
         append(logicalNowMs).append(UNIT)
-        append(lastVisible.asFlag())
+        append(lastVisible.asFlag()).append(UNIT)
+        append(maskedPackages.joinToString(MASK_SEPARATOR.toString()) { it.sanitized() })
         for (activity in activities) {
             append(RECORD)
             append(activity.packageName.sanitized()).append(UNIT)
@@ -49,23 +56,39 @@ data class TrackerState(
     }
 
     companion object {
-        const val VERSION = 1
+        /**
+         * 1: header of five fields. 2: adds a sixth header field, the comma-joined masked
+         * packages. Both are still readable; a version-1 row simply has no masked packages.
+         */
+        const val VERSION = 2
 
         private val UNIT: Char = Char(31)
         private val RECORD: Char = Char(30)
+
+        /** Joins masked package names inside the single header field that holds them. */
+        private const val MASK_SEPARATOR = ','
 
         /**
          * Returns null for anything this version cannot read with certainty -- absent,
          * truncated, or written by a newer format. The caller treats null as "no observer
          * state", which is safe precisely because it is not silently treated as "nothing was
          * on screen": the coordinator latches recovery if the checkpoint claimed visibility.
+         *
+         * Both header layouts this app has ever written are accepted, so an in-place update
+         * does not throw away a live observer (and spuriously latch recovery) just because the
+         * masked-packages field was added.
          */
         fun decode(text: String?): TrackerState? {
             if (text.isNullOrEmpty()) return null
             val records = text.split(RECORD)
             val header = records.first().split(UNIT)
-            if (header.size != 5) return null
-            if (header[0].toIntOrNull() != VERSION) return null
+            val version = header[0].toIntOrNull() ?: return null
+            val maskedPackages = when {
+                version == 1 && header.size == 5 -> emptyList()
+                version == 2 && header.size == 6 ->
+                    header[5].split(MASK_SEPARATOR).filter { it.isNotBlank() }
+                else -> return null
+            }
             val logicalNowMs = header[3].toLongOrNull() ?: return null
 
             val activities = ArrayList<TrackedActivityState>(records.size - 1)
@@ -86,12 +109,14 @@ data class TrackerState(
                 logicalNowMs = logicalNowMs,
                 lastVisible = header[4] == "1",
                 activities = activities,
+                maskedPackages = maskedPackages,
             )
         }
 
         private fun Boolean.asFlag(): String = if (this) "1" else "0"
 
         /** Package and class names cannot contain these; a corrupt one must not corrupt the row. */
-        private fun String.sanitized(): String = map { if (it == UNIT || it == RECORD) '?' else it }.joinToString("")
+        private fun String.sanitized(): String =
+            map { if (it == UNIT || it == RECORD || it == MASK_SEPARATOR) '?' else it }.joinToString("")
     }
 }
