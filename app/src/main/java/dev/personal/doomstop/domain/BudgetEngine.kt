@@ -82,9 +82,8 @@ object BudgetEngine {
      * How far accounting trails the present.
      *
      * Usage events are not guaranteed to be queryable the instant they occur, which is why
-     * the reader overlaps its query windows. Overlapping is only useful if the interval a
-     * late event corrects has not been committed yet, so committing waits this long. It must
-     * comfortably exceed the reader's overlap.
+     * the reader re-queries from the last settled boundary. A late event can only correct
+     * an interval that has not been committed yet, so committing waits this long.
      */
     const val SETTLE_LAG_MS = 30_000L
 

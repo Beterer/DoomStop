@@ -108,7 +108,7 @@ data class Checkpoint(
     val settledWallMs: Long,
     /** Whether a target was visible at [settledWallMs]. */
     val targetVisible: Boolean,
-    /** Wall-clock cursor into the usage-event stream; events at or before this are captured. */
+    /** Last successful read time; retained in the checkpoint schema for compatibility. */
     val usageCursorWallMs: Long,
     /** Accumulated accepted difference between system and monotonic time, reset each boot. */
     val acceptedDriftMs: Long,

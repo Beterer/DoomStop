@@ -21,6 +21,9 @@ enum class TrackedEventType {
      */
     PACKAGE_MASKED,
     PACKAGE_UNMASKED,
+
+    /** Android confirms this package is suspended, so a retained activity cannot be visible. */
+    PACKAGE_SUSPENDED,
 }
 
 /**
@@ -295,6 +298,9 @@ class VisibleTargetTracker(
             TrackedEventType.PACKAGE_MASKED -> maskedPackages.add(event.packageName)
 
             TrackedEventType.PACKAGE_UNMASKED -> maskedPackages.remove(event.packageName)
+
+            TrackedEventType.PACKAGE_SUSPENDED ->
+                activities.entries.removeAll { it.value.packageName == event.packageName }
 
             TrackedEventType.ACTIVITY_RESUMED -> {
                 if (event.packageName !in targets) return

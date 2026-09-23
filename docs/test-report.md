@@ -524,8 +524,8 @@ Two incidental findings from that run, neither a defect in this app:
 11. **Accounting commits on a thirty-second lag.** Enforcement uses the live estimate, so
     cut-off is unaffected, but a usage event delivered more than thirty seconds late is
     dropped with a diagnostic rather than applied to an interval that has already been
-    charged. Nothing observed so far arrives that late; the reader's own overlap is ten
-    seconds.
+    charged. The coordinator re-queries the entire unsettled interval on every pass; the
+    reader also overlaps it by ten seconds.
 12. **A clock correction larger than five seconds needs the PIN holder.** That is the price
     of refusing a clock jump outright. With automatic time on it should not happen; when it
     does, the acknowledgement screen names the reason and the range, and adopting the new
@@ -813,3 +813,45 @@ allow-list matching now run against real IDs rather than synthetic ones.
   hard-suspended whenever the other targets are, because the guard cannot run before first
   unlock; the post-unlock tick relaxes it once the guard binds. This mirrors the Shorts
   guard's boot handling but has not been exercised here.
+
+---
+
+## 13. Late usage events and live corrections (0.4.1), 2026-09-23
+
+The accounting window stays open for 30 seconds, but the coordinator previously queried
+usage events from its last poll cursor. The reader looked back only 10 seconds from that
+cursor. A pause and stop event delivered 15 seconds after the user left a target was therefore
+missed even though its timestamp was still inside the open accounting window. The observer
+kept the target visible and continued charging. The coordinator now queries from the last
+**settled** boundary each pass, so the complete correctable interval is re-read.
+
+An emulator regression delivered the exit 15 seconds late. Before the change, a 10-second
+session was charged as 85 seconds and the target remained visible. Afterward, it was charged
+as 10 seconds and visibility ended. The full 31-test coordinator suite and the JVM unit suite
+passed on the disposable non-owner emulator.
+
+The coordinator suite also exposed a separate boundary error: a live screen or Instagram-DM
+mask correction stamped exactly at the settled boundary was pruned from pending events before
+the checkpoint captured it. The checkpoint now includes that correction. The existing
+`instagramDmTimeIsNotChargedAndScrollingAfterwardsIs` test failed before this change and
+passed afterward in the full coordinator run.
+
+The Pixel 9 was subsequently connected. On 0.4.0, Android reported all three targets
+suspended, the last target activity stopped at 15:36:46 UTC, and DoomStop was foreground from
+15:47:30 UTC. Nevertheless `Used` rose from 1h06 to 1h19 while DoomStop was on screen. The
+database contained 4,789,373 ms charged for 2026-09-23. Its visible-target checkpoint was
+stale despite no target being foreground.
+
+There is a second repair path in 0.4.1: if Android confirms a tracked target is suspended,
+the coordinator clears its stale visible activities with a replayable synthetic event. The
+new `aSuspendedTargetCannotKeepChargingFromAStaleResumedEvent` regression failed before and
+passed after this change. This is defense in depth for any exit that arrives outside the
+correctable interval. On the Pixel, the signed 0.4.1 update retained Device Owner and the
+notification changed to `Not counting` while DoomStop was foreground; `Used` then stayed
+stable across repeated checks.
+
+The phone's usage-event history from local midnight contained at most 526 seconds of target
+foreground activity (including any Instagram DM time, which may be exempt). After an integrity-
+checked backup, a one-time transactional repair changed **only** the 2026-09-23 `chargedMs`
+from 4,789,373 to a conservative 540,000 ms (9 minutes). The exact legitimate total cannot
+be reconstructed from the event history alone; this deliberately rounds the upper bound up.

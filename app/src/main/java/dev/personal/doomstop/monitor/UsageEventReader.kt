@@ -51,7 +51,9 @@ class UsageEventReader(private val context: Context) : UsageSource {
     override fun hasUsageAccess(): Boolean = AppPermissions.hasUsageAccess(context)
 
     /**
-     * Read every relevant event in `(sinceWallMs - overlap, nowWallMs]`.
+     * Read every relevant event in `(sinceWallMs - overlap, nowWallMs]`. The coordinator
+     * supplies its last settled boundary, so every interval still open to correction is
+     * queried again even if an event takes longer than [OVERLAP_MS] to become available.
      *
      * An empty list with `available = true` means the phone was simply idle. `available =
      * false` means Usage Access is missing or the query failed, and the caller must not

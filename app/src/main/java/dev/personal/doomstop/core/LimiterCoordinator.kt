@@ -178,7 +178,10 @@ class LimiterCoordinator(
                 dao.upsertCheckpoint(CheckpointEntity.from(it))
             }
 
-        val read = reader.read(previous.usageCursorWallMs, reportedWallMs)
+        // Re-query the entire unsettled interval. Querying only from the last poll's
+        // cursor loses an event delivered more than the reader's short overlap later,
+        // even though its timestamp is still inside the 30-second correction window.
+        val read = reader.read(previous.settledWallMs, reportedWallMs)
         val tickInput = TickInput(
             bootId = bootId,
             elapsedMs = nowElapsedMs,
@@ -234,8 +237,8 @@ class LimiterCoordinator(
         // -- replay: settled first, then the tail that is still open to correction --------
 
         val settledTransitions = tracker.apply(usable.filter { it.timestampWallMs <= settledEndMs }, settledEndMs)
-        val visibleAtSettledEnd = tracker.isVisible
-        val settledObserverState = tracker.exportState().encode()
+        var visibleAtSettledEnd = tracker.isVisible
+        var settledObserverState = tracker.exportState().encode()
 
         val tailTransitions = ArrayList<VisibilityTransition>()
         tailTransitions += tracker.apply(usable.filter { it.timestampWallMs > settledEndMs }, acceptedNowMs)
@@ -253,7 +256,21 @@ class LimiterCoordinator(
         val maskCorrection = instagramMaskCorrection(settingsEntity.setupCompleted, acceptedNowMs)
         tailTransitions += maskCorrection.transitions
 
-        val newEvents = fresh + correction.events + maskCorrection.events
+        // A package the platform confirms suspended cannot remain a visible activity.
+        // This also repairs a retained RESUMED claim when its exit event arrived too late
+        // for the accounting window, as observed on the Pixel after the daily limit.
+        val suspensionCorrection = suspendedTargetCorrection(acceptedNowMs)
+        tailTransitions += suspensionCorrection.transitions
+
+        // At initialization (and occasionally after a clock refusal) the settled boundary
+        // is exactly now. A live correction stamped at that boundary is pruned from pending
+        // events by the accounting transaction, so it must also enter the settled snapshot.
+        if (settledEndMs == acceptedNowMs) {
+            visibleAtSettledEnd = tracker.isVisible
+            settledObserverState = tracker.exportState().encode()
+        }
+
+        val newEvents = fresh + correction.events + maskCorrection.events + suspensionCorrection.events
 
         val accounting = BudgetEngine.account(
             previous = previous,
@@ -510,6 +527,23 @@ class LimiterCoordinator(
             if (maskWanted) TrackedEventType.PACKAGE_MASKED else TrackedEventType.PACKAGE_UNMASKED,
         )
         return ScreenCorrection(transitions, listOf(event))
+    }
+
+    private fun suspendedTargetCorrection(atWallMs: Long): ScreenCorrection {
+        val events = tracker.snapshot().activities
+            .map { it.packageName }
+            .distinct()
+            .filter { it in TargetPackages.ALL && policy.readSuspended(it) == true }
+            .map {
+                TrackedEvent(
+                    timestampWallMs = atWallMs,
+                    packageName = it,
+                    className = SUSPENSION_OBSERVATION_CLASS,
+                    type = TrackedEventType.PACKAGE_SUSPENDED,
+                )
+            }
+        if (events.isEmpty()) return ScreenCorrection(emptyList(), emptyList())
+        return ScreenCorrection(tracker.apply(events, atWallMs), events)
     }
 
     /**
@@ -1280,6 +1314,9 @@ class LimiterCoordinator(
 
         /** Class name on the synthetic mask/unmask events for Instagram DM exemption. */
         private const val MASK_OBSERVATION_CLASS = "doomstop.mask"
+
+        /** Class name on a read-back correction for a suspended target. */
+        private const val SUSPENSION_OBSERVATION_CLASS = "doomstop.suspended"
 
         const val LEDGER_CHROME_BLOCKLIST = "chrome.${BlockedSites.KEY_URL_BLOCKLIST}"
         const val LEDGER_SUSPENDED_PREFIX = "suspended."

@@ -539,6 +539,38 @@ class CoordinatorRegressionTest {
     }
 
     @Test
+    fun aStopDeliveredAfterTheReadersOverlapStillEndsTheSession() = runTest {
+        usage.resume(instagram, clock.wallMs)
+        runFor(10_000, steps = 10)
+
+        usage.holdPause(instagram, clock.wallMs)
+        usage.holdStop(instagram, clock.wallMs)
+        // The 30-second accounting window is still open, but the reader's old 10-second
+        // overlap no longer reaches the exit events by the time they become queryable.
+        runFor(15_000, steps = 15)
+        usage.deliver()
+        runFor(60_000, steps = 60)
+
+        assertEquals(10_000L, coordinator.status.value.chargedMs)
+        assertFalse(coordinator.status.value.targetVisible)
+    }
+
+    @Test
+    fun aSuspendedTargetCannotKeepChargingFromAStaleResumedEvent() = runTest {
+        usage.resume(reddit, clock.wallMs)
+        runFor(allowanceMs, steps = 12)
+        assertEquals(true, policy.suspended[reddit])
+
+        // The usage source never reports PAUSED or STOPPED. Once suspension is read back,
+        // that old RESUMED cannot justify another minute of metering.
+        runFor(1_000)
+        assertFalse(coordinator.status.value.targetVisible)
+        val chargeAfterSuspension = coordinator.status.value.chargedMs
+        runFor(60_000, steps = 6)
+        assertEquals(chargeAfterSuspension, coordinator.status.value.chargedMs)
+    }
+
+    @Test
     fun deliveringTheSameEventsLateProducesTheSameDayTotal() = runTest {
         // Punctual delivery.
         usage.resume(instagram, clock.wallMs)

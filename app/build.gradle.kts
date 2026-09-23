@@ -34,9 +34,10 @@ android {
         minSdk = 34
         targetSdk = 37
         // 2 was the Gate D update-path build, installed on the phone but never committed.
-        // 4 shipped 0.3.0 to the phone; 5 is the 0.4.0 (Instagram messaging mode) update.
-        versionCode = 5
-        versionName = "0.4.0"
+        // 4 shipped 0.3.0 to the phone; 5 added Instagram messaging mode.
+        // 6 fixes late usage-event reconciliation and boundary corrections.
+        versionCode = 6
+        versionName = "0.4.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         // Fixtures deliberately leave policy applied so a person can look at the result.
