@@ -57,6 +57,39 @@ class InstagramGuardTest {
         assertTrue("direct_tab" in feedViewIds)
     }
 
+    @Test
+    fun theVisibleSelectedMessagesTabIdentifiesTheInboxWhenItsContainerIdsAreInvisible() {
+        // IG 448 on the Pixel reports the selected navigation tab correctly even when
+        // direct view-ID lookup returns stale, invisible inbox containers.
+        assertTrue(InstagramGuard.isDirectMessages(feedViewIds, listOf("direct_tab")))
+        assertTrue(
+            InstagramGuard.isDirectMessages(
+                feedViewIds.map { InstagramGuard.qualified(it) },
+                listOf("com.instagram.android:id/direct_tab"),
+            ),
+        )
+    }
+
+    @Test
+    fun theSelectedHomeTabDoesNotExemptTheFeed() {
+        assertFalse(InstagramGuard.isDirectMessages(feedViewIds, listOf("feed_tab")))
+    }
+
+    @Test
+    fun aSelectedMessagesTabThatIsNotVisibleDoesNotExemptAnotherScreen() {
+        assertFalse(InstagramGuard.isDirectMessages(listOf("reels_root"), listOf("direct_tab")))
+    }
+
+    @Test
+    fun anotherPackagesSelectedMessagesTabDoesNotExemptInstagram() {
+        assertFalse(
+            InstagramGuard.isDirectMessages(
+                listOf("com.example.other:id/direct_tab"),
+                listOf("com.example.other:id/direct_tab"),
+            ),
+        )
+    }
+
     // -- allow-list matching (synthetic IDs) --------------------------------------------------
 
     @Test

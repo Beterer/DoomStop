@@ -31,7 +31,7 @@ Built to [`docs/social-limit-implementation-plan.md`](docs/social-limit-implemen
 | Area | State |
 |---|---|
 | Application, accounting core, enforcement, PIN, UI | Implemented |
-| Unit tests (126, JVM only) | Passing |
+| Unit tests (133, JVM only) | Passing |
 | Instrumented tests (68, emulator) | The device-owner-free ones passed on 0.3.0. The 0.4.0 additions have not been run yet; see `docs/test-report.md` §11 |
 | Android lint | No errors. The only warnings are notices that newer dependency versions exist |
 | Gate A — device-owner provisioning | See `docs/test-report.md` |
@@ -43,7 +43,7 @@ Built to [`docs/social-limit-implementation-plan.md`](docs/social-limit-implemen
 | Provisioning on the real Pixel 9 | Done 2026-09-09 after a factory reset; see `docs/test-report.md` §10.1 |
 | YouTube Shorts guard (0.2.0) | Measured on the Pixel 9, including one known Chrome gap; see `docs/test-report.md` §10.2 |
 | Unused-time carryover (0.3.0) | Engine and coordinator tests. Installed on the Pixel 9, where the update carried the previous day's leftover; a real midnight not yet observed there. See `docs/test-report.md` §11 |
-| Instagram messaging mode (0.4.0) | Accounting and coordinator logic covered by JVM unit tests. The Instagram DM view IDs were **measured on the phone** (IG 447.0.0.55.81), where the DM thread turned out to be a FLAG_SECURE window; the end-to-end on-device behaviour has not been run, and whether the guard can read the secure thread is the first thing left to verify. See `docs/test-report.md` §12 |
+| Instagram messaging mode (0.4.2) | DM recognition and accounting regression coverage; inbox/thread exemption and feed metering measured on the Pixel 9 with IG 448.0.0.52.84. See `docs/test-report.md` §14 for the checks and remaining gaps |
 
 `docs/test-report.md` records what was measured, on what, and what is still unverified.
 Nothing in this repository claims an enforcement guarantee that has not been demonstrated.
@@ -105,13 +105,12 @@ Stated plainly, because a limiter that overstates its reach is worse than none:
   It recognises the Direct Messages screens by the names of Instagram's own view elements. It
   is an allow-list, so an Instagram update that renames them makes the guard stop recognising
   DMs: it then over-blocks — bouncing you out of messages too and charging DM time — rather
-  than letting scrolling through. It never mistakes the feed for messages. The view IDs were
-  measured on the phone (Instagram 447.0.0.55.81), and one finding is load-bearing: **an open
-  DM thread is a FLAG_SECURE window.** That does not block accessibility in general (screen
-  readers work on secure windows), so the guard is expected to read it — but this has not been
-  proven end to end, because the 0.4.0 build cannot be installed over the release-signed app on
-  the phone. If it turns out a bound service cannot see the secure thread, the DM inbox stays
-  usable but individual conversations would get bounced back to it. What is firm regardless is
+  than letting scrolling through. The feed's unselected Messages icon does not qualify. The IDs were
+  measured on the phone. On Instagram 448.0.0.52.84, **an open DM thread's secure window is
+  readable by the bound guard**, and its time stayed free. Inbox detection also accepts the
+  visible, selected Messages tab because direct inbox-ID lookup can return invisible nodes.
+  The same icon on the feed is unselected and does not exempt scrolling. These observations
+  do not guarantee detection after future Instagram updates. What is firm regardless is
   the rule behind the guard: with it off, Instagram is suspended outright once the limit is
   reached.
 - **DM time is only free while the messaging guard is running.** The exemption depends on the

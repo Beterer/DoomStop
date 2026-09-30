@@ -855,3 +855,64 @@ foreground activity (including any Instagram DM time, which may be exempt). Afte
 checked backup, a one-time transactional repair changed **only** the 2026-09-23 `chargedMs`
 from 4,789,373 to a conservative 540,000 ms (9 minutes). The exact legitimate total cannot
 be reconstructed from the event history alone; this deliberately rounds the upper bound up.
+
+---
+
+## 14. Instagram DM metering repair (0.4.2), 2026-09-30
+
+Measured on the Pixel 9, Instagram **448.0.0.52.84**, initially running DoomStop 0.4.1
+(versionCode 6). The owner's report was reproduced: with the DM inbox open, DoomStop's
+notification said `Counting now` and its remaining allowance decreased.
+
+Two problems were found:
+
+- Only `ShortsGuardService` was enabled in Android accessibility settings. The separate
+  `InstagramGuardService` was disabled, so DM time was charged conservatively. It was enabled
+  without changing the existing YouTube service.
+- With the Instagram service connected, direct inbox-ID lookup could still return invisible
+  inbox containers. Diagnostics recorded only resource IDs, visibility, selection and bounds;
+  no message content. The visible `direct_tab` reported `selected=true` in the inbox and
+  `selected=false` on the feed. An open conversation exposed a visible `message_list`, resolving
+  the secure-thread accessibility question left open in section 12.
+
+The guard now accepts a **visible, selected** Messages tab as an additional inbox signal.
+An unselected icon, a hidden selected icon, and another package's icon cannot qualify. It
+inspects immediately on binding, rechecks every 300 ms while Instagram is active so a quiet
+screen or a transient animation result does not remain stale, and nudges the coordinator
+when the DM state changes. Checks stop outside Instagram and callbacks are canceled on unbind.
+The existing replayable accounting mask and conservative guard-off behavior are unchanged.
+
+### Verification
+
+The selected-tab regression was run before the classifier change: 19 guard tests ran and the
+new inbox case failed. After the change, all **133 JVM tests** passed. Debug/release builds
+and Android lint passed with no errors; dependency-version warnings remain. The disposable
+non-owner `doomstop_bug_test` emulator passed all **31 CoordinatorRegressionTest** tests,
+including DM exemption, scrolling after DMs, and the allowance-exhaustion enforcement split.
+No instrumented fixtures or debug APKs were installed on the phone.
+
+The signed release **0.4.2, versionCode 9** was installed in place. Codes 7 and 8 were
+temporary diagnostic builds; the final build removes those inspection logs. Live checks use
+`scripts/Test-InstagramMetering.ps1`, which reads DoomStop's notification and compares
+remaining time before and after a quiet interval. It waits three seconds for a just-completed
+screen transition; no UI-automation dump is running during the metering measurement.
+
+| Screen / transition | Device result |
+|---|---|
+| DM inbox, 20 seconds | `8 min 45 s` before and after; `Not counting` |
+| Open conversation, 20 seconds | `8 min 45 s` before and after; `Not counting` |
+| Return from DMs to Home feed, 10 seconds | `8 min 42 s` → `8 min 32 s`; `Counting now` |
+| Reels tab, 10 seconds | `7 min 54 s` → `7 min 44 s`; `Counting now` |
+| Rebind the guard with the inbox already open, then wait 35 seconds (past settlement lag) | `7 min 16 s` before and after; `Not counting` |
+
+Both guards were left enabled. Device Owner was read back unchanged, and the phone was
+returned to its home screen with the notification reporting `Not counting`.
+
+Previously charged usage was not rewritten: historical usage events do not identify which
+Instagram pane was open. The exact initial charge from legitimate DMs cannot be recovered.
+
+**Still unverified on the phone:** messaging-only enforcement after allowance exhaustion,
+locked boot, split-screen/multiple windows, and every Instagram sub-screen or future update.
+An unavailable accessibility root remains conservative until another Instagram event allows
+detection. The guard remains best-effort; the emulator's fake-probe enforcement tests do not
+establish real Instagram navigation behavior at the limit.

@@ -77,6 +77,8 @@ class InstagramGuardService : AccessibilityService() {
         // Being bound can be what started this process. Make sure the monitor runs, and tick
         // at once so an Instagram suspended for a disconnected guard is released now.
         UsageMonitorService.start(this)
+        // Binding while a quiet inbox is already open may produce no Instagram event.
+        scheduleCheck()
         nudgeCoordinator()
     }
 
@@ -102,9 +104,16 @@ class InstagramGuardService : AccessibilityService() {
         val reentered = now - lastCheckUptimeMs > REENTRY_RESET_MS
         lastCheckUptimeMs = now
 
-        val onInstagram = rootIsInstagram()
-        val directMessages = onInstagram && directMessagesOnScreen()
+        val root = rootInActiveWindow
+        val onInstagram = root?.packageName?.toString() == InstagramGuard.INSTAGRAM_PACKAGE
+        val directMessages = onInstagram && directMessagesOnScreen(root)
+        val changed = inDirectMessages != directMessages
         inDirectMessages = directMessages
+        if (changed) nudgeCoordinator()
+
+        // Re-check while Instagram is foreground: an animation can expose stale nodes on
+        // its last event, and a quiet inbox/feed still needs metering and grace updates.
+        if (onInstagram) scheduleCheck()
 
         if (directMessages || reentered || lastAllowedUptimeMs == 0L) {
             lastAllowedUptimeMs = now
@@ -138,12 +147,20 @@ class InstagramGuardService : AccessibilityService() {
         return root.packageName?.toString() == InstagramGuard.INSTAGRAM_PACKAGE
     }
 
-    private fun directMessagesOnScreen(): Boolean {
-        val root: AccessibilityNodeInfo = rootInActiveWindow ?: return false
+    private fun directMessagesOnScreen(root: AccessibilityNodeInfo? = rootInActiveWindow): Boolean {
+        root ?: return false
         if (root.packageName?.toString() != InstagramGuard.INSTAGRAM_PACKAGE) return false
-        return InstagramGuard.DM_SCREEN_VIEW_IDS.any { id ->
-            root.findAccessibilityNodeInfosByViewId(InstagramGuard.qualified(id)).any { it.isVisibleToUser }
+        val visibleIds = mutableListOf<String>()
+        val selectedIds = mutableListOf<String>()
+        for (id in InstagramGuard.DM_SCREEN_VIEW_IDS + InstagramGuard.DM_INBOX_TAB_VIEW_ID) {
+            for (node in root.findAccessibilityNodeInfosByViewId(InstagramGuard.qualified(id))) {
+                if (!node.isVisibleToUser) continue
+                val qualifiedId = node.viewIdResourceName ?: continue
+                visibleIds += qualifiedId
+                if (node.isSelected) selectedIds += qualifiedId
+            }
         }
+        return InstagramGuard.isDirectMessages(visibleIds, selectedIds)
     }
 
     private fun messagingModeActive(): Boolean {
@@ -164,6 +181,8 @@ class InstagramGuardService : AccessibilityService() {
     override fun onUnbind(intent: Intent?): Boolean {
         connected = false
         inDirectMessages = false
+        handler.removeCallbacksAndMessages(null)
+        checkPending = false
         Log.i(TAG, "unbound")
         nudgeCoordinator()
         return super.onUnbind(intent)

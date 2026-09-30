@@ -101,6 +101,21 @@ The app reports "Protected" only when every line above is green.
 
 Optionally verify Chrome independently: open `chrome://policy` and look for `URLBlocklist`.
 
+### The Instagram messaging guard
+
+DM time is exempt only while **DoomStop messaging guard** is enabled and running. The
+YouTube Shorts guard is a separate service; switching that one on does not enable DMs.
+
+1. Open Setup & diagnostics → **Switch on the messaging guard**, or Settings → Accessibility.
+2. Enable **DoomStop messaging guard** and confirm the Android accessibility prompt.
+3. Check that **Instagram messaging guard running** is green. Open the Instagram inbox
+   and a conversation: DoomStop's notification should say **Not counting**, with remaining
+   time unchanged. Return to the feed or Reels: it should say **Counting now**.
+
+If the guard is off, all Instagram time counts and Instagram is suspended at the limit.
+After a major Instagram update, repeat the inbox/thread/feed checks: screen recognition is
+best-effort and may need updated markers. See `docs/test-report.md` section 14.
+
 ### The YouTube Shorts guard
 
 From 0.2.0 on, DoomStop closes the YouTube Shorts player whenever it opens, and leaves

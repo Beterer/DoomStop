@@ -36,8 +36,9 @@ android {
         // 2 was the Gate D update-path build, installed on the phone but never committed.
         // 4 shipped 0.3.0 to the phone; 5 added Instagram messaging mode.
         // 6 fixes late usage-event reconciliation and boundary corrections.
-        versionCode = 6
-        versionName = "0.4.1"
+        // 7-8 were on-phone DM diagnostics; 9 fixes inbox detection and quiet-screen checks.
+        versionCode = 9
+        versionName = "0.4.2"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         // Fixtures deliberately leave policy applied so a person can look at the result.

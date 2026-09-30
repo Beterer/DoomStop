@@ -67,13 +67,11 @@ object InstagramGuard {
      *    `message_list`, `row_thread_composer_edittext`, `direct_thread_header` and
      *    `thread_view_root` are the thread's core views (not the many `*_stub` placeholders).
      *
-     * IMPORTANT, still unverified: FLAG_SECURE blocks screenshots, not accessibility (TalkBack
-     * reads secure windows), so the bound guard is EXPECTED to see these thread IDs at runtime
-     * -- but that has NOT been proven end-to-end on a device, because 0.4.0 cannot be installed
-     * over the release-signed device owner on the phone. If a bound AccessibilityService turns
-     * out not to receive the secure thread's nodes, the guard would bounce the user from an
-     * open thread back to the inbox (which it does recognise). Verify on a throwaway AVD with a
-     * test Instagram account, or briefly with TalkBack on the phone, before fully trusting it.
+     * Re-checked on the Pixel 9 with IG 448.0.0.52.84, 2026-09-30: a bound guard does read
+     * the secure thread's message_list, and the allowance stays unchanged there. Inbox ID
+     * lookup can instead return invisible containers while the inbox is on screen. Its
+     * visible, selected direct_tab is a second inbox signal; an unselected icon on the feed
+     * must never match. See DM_INBOX_TAB_VIEW_ID and docs/test-report.md section 14.
      *
      * Re-measure after a major Instagram update, exactly as for [ShortsGuard]. It is an
      * allow-list, so the failure direction is safe: unrecognised DM views make the guard
@@ -90,6 +88,9 @@ object InstagramGuard {
         "thread_view_root",
     )
 
+    /** Only a VISIBLE, SELECTED messages tab identifies the inbox; the icon alone does not. */
+    const val DM_INBOX_TAB_VIEW_ID = "direct_tab"
+
     /** How long a launch, or a return to a non-DM screen, is tolerated before backing out. */
     const val LAUNCH_GRACE_MS = 3_000L
 
@@ -103,9 +104,19 @@ object InstagramGuard {
     /** The fully qualified form AccessibilityNodeInfo uses for an Instagram view ID. */
     fun qualified(viewId: String): String = "$INSTAGRAM_PACKAGE:id/$viewId"
 
-    /** True when the visible view IDs, qualified or not, include a DM inbox or thread view. */
-    fun isDirectMessages(visibleViewIds: Collection<String>): Boolean =
-        visibleViewIds.any { it.removePrefix("$INSTAGRAM_PACKAGE:id/") in DM_SCREEN_VIEW_IDS }
+    /**
+     * Inbox/thread markers, or the visible selected Messages tab, identify DMs. IG 448 can
+     * return invisible inbox containers from direct ID lookup while its selected tab is
+     * correctly exposed. Requiring visibility AND selection keeps the feed's icon inert.
+     */
+    fun isDirectMessages(
+        visibleViewIds: Collection<String>,
+        selectedViewIds: Collection<String> = emptyList(),
+    ): Boolean =
+        visibleViewIds.any {
+            val id = it.removePrefix("$INSTAGRAM_PACKAGE:id/")
+            id in DM_SCREEN_VIEW_IDS || (id == DM_INBOX_TAB_VIEW_ID && it in selectedViewIds)
+        }
 
     /**
      * The launch-timer verdict for one inspection of Instagram.
