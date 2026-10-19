@@ -44,6 +44,40 @@ class LimiterDaoTest {
     @After
     fun tearDown() = database.close()
 
+    @Test
+    fun accountingTraceRetentionKeepsErrorsAndTheNewestEligibleTraces() = runTest {
+        dao.insertDiagnostic(DiagnosticEventEntity(atWallMs = 1L, type = "protection_error", detail = "preserve"))
+        for (at in listOf(10L, 20L, 30L, 40L, 50L)) {
+            dao.insertDiagnostic(DiagnosticEventEntity(atWallMs = at, type = "accounting_trace", detail = "trace"))
+        }
+        dao.pruneAccountingTraces(beforeWallMs = 25L, keep = 2)
+        val records = dao.recentDiagnostics(100)
+        assertEquals(listOf(50L, 40L, 1L), records.map { it.atWallMs })
+        assertEquals("protection_error", records.last().type)
+    }
+
+    @Test
+    fun aFailedTraceInsertRollsBackTheDebitAndCheckpointTogether() = runTest {
+        val initial = checkpoint()
+        dao.upsertCheckpoint(initial)
+        dao.dayOrCreate("2026-10-08", allowanceMs)
+        val duplicate = DiagnosticEventEntity(id = 77L, atWallMs = 1L, type = "accounting_trace", detail = "existing")
+        dao.insertDiagnostic(duplicate)
+        val failure = runCatching {
+            dao.applyAccounting(
+                slices = listOf(DaySlice("2026-10-08", 1_000L)),
+                baseAllowanceMs = allowanceMs,
+                checkpoint = initial.copy(lastWallMs = 3_000L, settledWallMs = 3_000L),
+                retainedEvents = emptyList(),
+                settledThroughWallMs = 3_000L,
+                diagnostic = duplicate,
+            )
+        }
+        assertTrue(failure.exceptionOrNull() is android.database.sqlite.SQLiteConstraintException)
+        assertEquals(0L, dao.day("2026-10-08")?.chargedMs)
+        assertEquals(initial, dao.checkpoint())
+    }
+
     private fun checkpoint(
         elapsedMs: Long = 1_000,
         wallMs: Long = 2_000,

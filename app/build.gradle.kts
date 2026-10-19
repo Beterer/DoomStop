@@ -37,8 +37,11 @@ android {
         // 4 shipped 0.3.0 to the phone; 5 added Instagram messaging mode.
         // 6 fixes late usage-event reconciliation and boundary corrections.
         // 7-8 were on-phone DM diagnostics; 9 fixes inbox detection and quiet-screen checks.
-        versionCode = 9
-        versionName = "0.4.2"
+        // 10 was incident inspection; 11 adds a durable accounting journal and ADB export.
+        // 12 honors activity stops even when Android omits the preceding pause event.
+        // 13 was temporary same-key reset inspection; 14 restores the normal release.
+        versionCode = 14
+        versionName = "0.4.4"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         // Fixtures deliberately leave policy applied so a person can look at the result.

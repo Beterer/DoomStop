@@ -219,8 +219,9 @@ data class ExtensionGrantEntity(
 )
 
 /**
- * Minimal diagnostics: protection errors and extension grants. Never a PIN, never window
- * content, never anything about what was on screen.
+ * Local diagnostics: protection errors, extension grants and a bounded accounting journal.
+ * The journal contains screen/lock state and target-package lifecycle metadata, never PINs,
+ * activity class names, messages, URLs or window content.
  */
 @Entity(tableName = "diagnostic_event")
 data class DiagnosticEventEntity(

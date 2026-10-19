@@ -114,10 +114,69 @@ class VisibleTargetTrackerTest {
     }
 
     @Test
-    fun `a stopped event for an older instance of the same class does not blind the tracker`() {
-        // The platform guarantees onPause before onStop, so a STOPPED arriving while this
-        // key is RESUMED belongs to a previous instance. Without instance IDs this rule is
-        // the only thing preventing a lost session.
+    fun `a stop without a pause ends a resumed activity`() {
+        val tracker = tracker()
+        tracker.apply(listOf(event(1_000, instagram, TrackedEventType.ACTIVITY_RESUMED)), 1_500)
+        val transitions = tracker.apply(
+            listOf(event(2_000, instagram, TrackedEventType.ACTIVITY_STOPPED)),
+            60_000,
+        )
+        assertFalse("a missing pause cannot leave a phantom resumed activity", tracker.isVisible)
+        assertEquals(listOf(2_000L to false), transitions.map { it.atWallMs to it.visible })
+        assertTrue(tracker.snapshot().activities.isEmpty())
+    }
+
+    @Test
+    fun `returning from an overlay then stopping without a pause ends visibility after restart`() {
+        // Pixel 9, 2026-10-19: ModalActivity resumed after a transparent overlay, then
+        // STOPPED without PAUSED when Home was pressed. The old tracker counted forever.
+        val modal = "com.instagram.modal.ModalActivity"
+        val overlay = "com.instagram.modal.TransparentModalActivity"
+        val before = tracker()
+        before.apply(
+            listOf(
+                event(1_000, instagram, TrackedEventType.ACTIVITY_RESUMED, modal),
+                event(2_000, instagram, TrackedEventType.ACTIVITY_PAUSED, modal),
+                event(2_000, instagram, TrackedEventType.ACTIVITY_RESUMED, overlay),
+                event(20_000, instagram, TrackedEventType.ACTIVITY_PAUSED, overlay),
+                event(20_000, instagram, TrackedEventType.ACTIVITY_RESUMED, modal),
+                event(20_100, instagram, TrackedEventType.ACTIVITY_STOPPED, overlay),
+            ),
+            20_500,
+        )
+        val after = tracker()
+        after.restore(requireNotNull(TrackerState.decode(before.exportState().encode())))
+        val transitions = after.apply(
+            listOf(
+                event(21_000, launcher, TrackedEventType.ACTIVITY_RESUMED),
+                event(22_000, instagram, TrackedEventType.ACTIVITY_STOPPED, modal),
+            ),
+            120_000,
+        )
+        assertFalse(after.isVisible)
+        assertFalse(after.hasUnresolved)
+        assertEquals(listOf(22_000L to false), transitions.map { it.atWallMs to it.visible })
+    }
+
+    @Test
+    fun `stopping one resumed target without a pause keeps another resumed target visible`() {
+        val tracker = tracker()
+        tracker.apply(
+            listOf(
+                event(1_000, instagram, TrackedEventType.ACTIVITY_RESUMED),
+                event(1_200, reddit, TrackedEventType.ACTIVITY_RESUMED),
+                event(2_000, instagram, TrackedEventType.ACTIVITY_STOPPED),
+            ),
+            3_000,
+        )
+        assertTrue(tracker.isVisible)
+        assertEquals(listOf(reddit), tracker.snapshot().activities.map { it.packageName })
+    }
+
+    @Test
+    fun `the latest stop wins when same-class instances cannot be distinguished`() {
+        // Public UsageEvents fields cannot identify instances. A stop cannot be assumed
+        // to belong to an older instance solely because the class is still RESUMED.
         val tracker = tracker()
         tracker.apply(
             listOf(
@@ -128,7 +187,7 @@ class VisibleTargetTrackerTest {
             ),
             3_000,
         )
-        assertTrue(tracker.isVisible)
+        assertFalse(tracker.isVisible)
     }
 
     @Test

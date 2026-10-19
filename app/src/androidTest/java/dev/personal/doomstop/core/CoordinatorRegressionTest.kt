@@ -201,6 +201,95 @@ class CoordinatorRegressionTest {
         return database.dao().day(day)?.chargedMs ?: 0L
     }
 
+    @Test
+    fun stoppingWithoutAPauseEndsChargingAcrossSettlementAndRestart() = runTest {
+        usage.resume(reddit, clock.wallMs)
+        runFor(10_000, steps = 10)
+        usage.stop(reddit, clock.wallMs)
+        runFor(5_000)
+        assertFalse(coordinator.status.value.targetVisible)
+        restartProcess()
+        runFor(60_000, steps = 30)
+        assertEquals(10_000L, settledChargeMs())
+        assertFalse(coordinator.status.value.targetVisible)
+        assertNull(database.dao().checkpoint()?.recoveryReason)
+        runFor(60_000, steps = 30)
+        assertEquals("idle time cannot continue the stopped session", 10_000L, settledChargeMs())
+    }
+
+    // -- durable accounting diagnostics ------------------------------------------------------
+
+    @Test
+    fun everySettledDebitHasADurableTraceAcrossProcessRestart() = runTest {
+        usage.resume(reddit, clock.wallMs)
+        runFor(10_000, steps = 10)
+        usage.pause(reddit, clock.wallMs)
+        usage.stop(reddit, clock.wallMs)
+        restartProcess()
+        runFor(60_000, steps = 6)
+
+        var tracedCharge = 0L
+        var rows = 0
+        database.openHelper.readableDatabase.query(
+            "SELECT detail FROM diagnostic_event WHERE type='accounting_trace' ORDER BY id",
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                val trace = org.json.JSONObject(cursor.getString(0))
+                val slices = trace.getJSONArray("slices")
+                for (i in 0 until slices.length()) tracedCharge += slices.getJSONObject(i).getLong("ms")
+                assertTrue(trace.has("interactive"))
+                assertTrue(trace.has("locked"))
+                assertTrue(trace.has("settledFrom"))
+                assertTrue(trace.has("elapsed"))
+                assertFalse("activity class names must not enter diagnostics", cursor.getString(0).contains("MainActivity"))
+                rows++
+            }
+        }
+        assertTrue("a durable accounting trace must exist", rows > 0)
+        assertEquals(10_000L, tracedCharge)
+        assertEquals(settledChargeMs(), tracedCharge)
+    }
+
+    @Test
+    fun idleTracingUsesHeartbeatsInsteadOfOneRowPerPoll() = runTest {
+        runFor(600_000, steps = 600)
+        database.openHelper.readableDatabase.query(
+            "SELECT COUNT(*) FROM diagnostic_event WHERE type='accounting_trace'",
+        ).use { cursor ->
+            cursor.moveToFirst()
+            assertTrue("idle periods remain explainable", cursor.getLong(0) >= 3L)
+            assertTrue("idle polls must not flood the journal", cursor.getLong(0) <= 4L)
+        }
+    }
+
+    @Test
+    fun flushingAnOpenTailRecordsItsDebitToo() = runTest {
+        usage.resume(reddit, clock.wallMs)
+        runFor(10_000, steps = 10)
+        usage.available = false
+        coordinator.tick(Trigger.POLL)
+        val traces = database.dao().recentDiagnostics(100)
+            .filter { it.type == "accounting_trace" }
+            .map { org.json.JSONObject(it.detail) }
+        val flush = traces.single { it.getString("trigger") == "FLUSH_OPEN_TAIL" }
+        assertEquals(10_000L, flush.getJSONArray("slices").getJSONObject(0).getLong("ms"))
+        assertEquals(10_000L, settledChargeMs())
+    }
+
+    @Test
+    fun theJournalDoesNotRecordUnrelatedAppIdentities() = runTest {
+        val privatePackage = "unrelated.private.app"
+        usage.resume(privatePackage, clock.wallMs)
+        usage.resume(reddit, clock.wallMs)
+        runFor(40_000, steps = 4)
+        val journal = database.dao().recentDiagnostics(100).filter { it.type == "accounting_trace" }
+        assertTrue(journal.isNotEmpty())
+        journal.forEach {
+            assertFalse(it.detail.contains(privatePackage))
+            assertFalse(it.detail.contains("MainActivity"))
+        }
+    }
+
     // -- Instagram messaging mode ------------------------------------------------------------
 
     @Test

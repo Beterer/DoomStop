@@ -112,6 +112,22 @@ abstract class LimiterDao {
     @Query("SELECT * FROM diagnostic_event ORDER BY atWallMs DESC LIMIT :limit")
     abstract fun recentDiagnosticsFlow(limit: Int): Flow<List<DiagnosticEventEntity>>
 
+    @Query("SELECT * FROM diagnostic_event ORDER BY id DESC LIMIT :limit")
+    abstract suspend fun recentDiagnostics(limit: Int): List<DiagnosticEventEntity>
+
+    @Query("SELECT MAX(id) FROM diagnostic_event")
+    abstract suspend fun latestDiagnosticId(): Long?
+
+    @Query("SELECT COUNT(*) FROM diagnostic_event WHERE id <= :throughId")
+    abstract suspend fun diagnosticCountThrough(throughId: Long): Long
+
+    @Query("SELECT * FROM diagnostic_event WHERE id > :afterId AND id <= :throughId ORDER BY id ASC LIMIT :limit")
+    abstract suspend fun diagnosticPage(afterId: Long, throughId: Long, limit: Int): List<DiagnosticEventEntity>
+
+    /** Bound the accounting journal without deleting protection errors or admin records. */
+    @Query("DELETE FROM diagnostic_event WHERE type = 'accounting_trace' AND (atWallMs < :beforeWallMs OR id NOT IN (SELECT id FROM diagnostic_event WHERE type = 'accounting_trace' ORDER BY id DESC LIMIT :keep))")
+    abstract suspend fun pruneAccountingTraces(beforeWallMs: Long, keep: Int)
+
     @Query("DELETE FROM diagnostic_event WHERE atWallMs < :beforeWallMs")
     abstract suspend fun pruneDiagnosticsBefore(beforeWallMs: Long)
 
@@ -152,6 +168,7 @@ abstract class LimiterDao {
         checkpoint: CheckpointEntity,
         retainedEvents: List<PendingEventEntity>,
         settledThroughWallMs: Long,
+        diagnostic: DiagnosticEventEntity? = null,
     ) {
         for (slice in slices) {
             if (slice.durationMs <= 0) continue
@@ -168,6 +185,8 @@ abstract class LimiterDao {
         if (retainedEvents.isNotEmpty()) insertPendingEvents(retainedEvents)
         prunePendingEventsThrough(settledThroughWallMs)
         upsertCheckpoint(checkpoint)
+        // A debit and its explanation either both commit or neither does.
+        if (diagnostic != null) insertDiagnostic(diagnostic)
     }
 
     /**
