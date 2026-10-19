@@ -87,11 +87,12 @@ data class TrackerSnapshot(
  *    being metered, so continued viewing was free. Refusing to decide is the only answer
  *    that is not exploitable: the coordinator turns [hasUnresolved] into a latched recovery
  *    state, so targets are suspended and the PIN holder resolves it.
- *  - A STOPPED is honoured only when the tracked state for that key is PAUSED. The
- *    platform guarantees onPause() runs before onStop(), so a STOPPED arriving while the
- *    key is RESUMED must belong to an OLDER instance of the same activity class -- the
- *    one case where the missing instance ID would otherwise make the app go blind
- *    mid-session.
+ *  - STOPPED ends that package/class entry even if PAUSED was missing from UsageEvents.
+ *    Lifecycle callback ordering does not guarantee a complete usage-event stream. Stops
+ *    older than the latest state are ignored, but public usage events cannot distinguish
+ *    a later stop from an older instance of the same class; that can undercount until the
+ *    next RESUMED. Assuming every unpaired stop belongs to an older instance instead
+ *    leaves a departed app metered indefinitely, as measured on the Pixel.
  *
  * Screen gating: nothing is charged while the screen is off or the keyguard is shown,
  * which is what keeps background audio and a pocketed phone free of charge.
@@ -330,10 +331,9 @@ class VisibleTargetTracker(
 
             TrackedEventType.ACTIVITY_STOPPED -> {
                 val existing = activities[keyOf(event)] ?: return
-                // onPause() always precedes onStop(). A STOPPED while this key is RESUMED
-                // therefore belongs to an older instance of the same class, and dropping
-                // the key here would blind the tracker for the rest of the session.
-                if (existing.state == ActivityState.RESUMED) return
+                // UsageEvents can omit PAUSED even when this instance really stopped.
+                // Only an older timestamp proves the stop predates the latest state.
+                if (event.timestampWallMs < existing.sinceMs) return
                 activities.remove(keyOf(event))
             }
         }

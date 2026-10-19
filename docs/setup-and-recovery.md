@@ -316,6 +316,45 @@ VPNs, camera, calls or notifications is applied.
 
 ## 9. When something looks wrong
 
+### Save an accounting trace
+
+From version 0.4.3, the monitor keeps a persistent local accounting journal. If time
+disappears while the phone is locked, connect it and export **before resetting usage or
+waiting several days**:
+
+```powershell
+.\scripts\Export-DoomStopDiagnostics.ps1 -Serial '<phone-serial>' `
+  -Adb "$env:LOCALAPPDATA\Android\Sdk\platform-tools\adb.exe"
+```
+
+The read-only export works with the normal signed release; no debug build or PIN is needed.
+The monitor must be running, and the phone must have been unlocked once since boot so its
+credential-protected database is accessible. `-OutputPath` selects a destination; by default
+the script saves JSON Lines under `%LOCALAPPDATA%\DoomStop\diagnostics`.
+Exports use small pages with a fixed record cutoff. The script validates their IDs and
+the initial record count; if retention deletes unread records during export, it refuses
+to save an incomplete file and asks you to rerun it.
+
+It includes today's stored balance, each committed debit and its interval, screen/lock
+state, target-package lifecycle metadata, DM masking, delayed-event drops, boot identity
+and both clocks. Every debit (including a flushed unsettled tail) and its journal row
+commit together. Idle periods have five-minute heartbeats; a gap between records can show
+that polling was delayed. Live observations are stamped when sampled: they cannot prove
+what the screen was doing earlier during an unobserved gap.
+
+The journal survives process restarts and signed updates. It is bounded to seven days and
+20,000 accounting records, with pruning every ten minutes while the monitor runs. Existing
+protection errors and admin records are retained separately from that pruning. A busy
+journal can reach the record limit earlier than seven days. The export contains no PIN
+verifier, PIN attempts, activity class names, messages, URLs or window content. Target
+identities and usage timestamps still describe personal usage, so keep the export private.
+
+This is an investigation tool, not an automatic refund or a new way to bypass the PIN.
+There is no exported reset endpoint. A one-time operator repair must target the current
+accounting day, preserve other balances/settings, and record the old charge and reason.
+
+### Protection and recovery states
+
 Setup & diagnostics names the failing capability and what to do about it. Three states are
 worth understanding:
 

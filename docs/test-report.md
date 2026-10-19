@@ -916,3 +916,147 @@ locked boot, split-screen/multiple windows, and every Instagram sub-screen or fu
 An unavailable accessibility root remains conservative until another Instagram event allows
 detection. The guard remains best-effort; the emulator's fake-probe enforcement tests do not
 establish real Instagram navigation behavior at the limit.
+
+## 15. Overnight usage report and persistent accounting journal (2026-10-08)
+
+The owner reported waking with the shared allowance exhausted for a second time while
+the phone had been locked. The connected Pixel 9 was running signed **0.4.2 / code 9**,
+which includes the section 13 delayed-event fix. Today's stored charge was **3,039,849 ms
+(50 min 39 s)**, with a 1,800,000 ms base allowance, 305,717 ms carryover and no extension.
+No recovery was latched; the current checkpoint reported no visible target.
+
+Android's last-24-hour usage-event dump, original installed APK and the original balance
+were captured before repair. A consistent database snapshot was made on the phone before
+the reset; the durable local database copy is a **post-reset** snapshot. The old diagnostics
+contain occasional late-event drops but no debit timeline, so they cannot establish which
+locked interval was charged. An independent, approximate lifecycle/screen reconstruction
+from the dump yielded 1,483 seconds of unlocked target visibility through 16:25, including
+Instagram DMs, versus the stored 3,039.849 seconds. This is supporting discrepancy evidence,
+not an exact accounting replay or a confirmed root cause.
+
+At 16:31 local time, a one-time conditional SQLite transaction reset **only 2026-10-08's
+chargedMs to zero**, after confirming the old value and no visible target at the checkpoint.
+It retained the 30-minute daily setting, 5 min 5.717 s carryover, extensions, older days, PIN
+state and policy ledger, and added an `incident_usage_reset` record containing the prior
+charge. Later Instagram activity and usage accumulated after that reset were retained.
+The operator helper and on-phone backup were removed. No owner provisioning/removal,
+factory reset, accessibility-setting change or fixture policy was performed on the phone.
+
+Version **0.4.3 / code 11** adds a persistent `accounting_trace` journal in the existing
+diagnostic table; there is no schema change. Each settled debit and its trace commit in
+the same Room transaction, including open-tail settlement. Trace fields include both
+clocks, boot identity, settled intervals/transitions, target lifecycle metadata, screen/lock
+state, DM masking, live corrections and dropped events. They exclude activity class names,
+unrelated app identities, PIN data, messages, URLs and window content. Idle polls use
+five-minute heartbeats. Pruning runs every ten minutes, retaining the newest 20,000 traces
+and removing traces older than seven days; the count can briefly exceed the cap between
+pruning passes. Protection errors and admin records are not removed by this pruning.
+
+The release-safe `dumpsys` export uses pages of 250 rows because a large service dump can
+block accessibility callbacks or time out. The first page records a fixed upper ID and
+expected row count. `scripts/Export-DoomStopDiagnostics.ps1` verifies increasing IDs, page
+completion and that initial count before saving a JSON Lines file. A concurrent retention
+deletion causes a clear failure and no artifact, rather than a silently incomplete export.
+
+### Verification
+
+| Evidence | Result |
+|---|---|
+| JVM engine/guard suite | **133 tests passed**, zero failures/errors |
+| Debug/release builds and Android lint | **Passed**; lint has zero errors and 11 dependency-version notices. Local builds used the SDK AAPT2 override, in-process Kotlin compilation, one worker and an increased Gradle metaspace limit after local daemon/memory failures |
+| Coordinator/DAO/migration suites on the non-owner emulator `emulator-5580` | **54 tests passed**, including six new tests for restart-safe debit traces, idle sampling, open-tail traces, unrelated-app exclusion, selective retention and transaction rollback |
+| New diagnostics before implementation | Both initial tests failed because the old app had no durable accounting traces |
+| Near-cap emulator export | **20,385 records exported in 28.37 s** across small pages: 20,001 accounting traces and 250 fixture errors plus existing diagnostics. Counts for every type through the fixed cutoff matched an independent SQLite query |
+| Simulated retention deletion between export pages | **Rejected**, with no output artifact saved |
+| Release signing identity | Code 11's signature verified and matched the captured code 9 certificate |
+
+**Historical status on 2026-10-08, superseded by section 16:** the Pixel disconnected before the final code 11 installation
+could run. The phone was last confirmed on temporary, same-key inspection **code 10**,
+which is debuggable and has the old metering behavior; the new journal is not active there
+yet. Reconnect the Pixel, install the built normal non-debuggable code 11 release in place,
+then verify ownership, guard connections, a release-safe export and locked-screen usage.
+Section 16 records the later code 12 installation and live journal verification. A real overnight recurrence
+has not been captured by the new journal, and the false-drain cause remains unconfirmed.
+
+## 16. Active phantom Instagram countdown (2026-10-19)
+
+The Pixel 9 was still running the same-key, debuggable inspection **0.4.3 / code 10**;
+the code 11 journal described above had never been installed. During the live incident,
+Android reported the launcher as resumed while DoomStop said **Counting now**. Two
+database snapshots 52,707 ms apart showed exactly 52,707 ms of additional settled charge.
+The retained observer contained only Instagram's `ModalActivity`, still marked RESUMED.
+
+Android's compact usage-event dump supplied exact timestamps and instance identities:
+the same modal instance resumed at **13:02:18.810 EEST**, the launcher resumed next, and
+the modal stopped at **13:02:20.186**, with no intervening modal PAUSED event. The tracker
+discarded that STOPPED because it assumed that a stop while RESUMED belonged to an older
+instance. Callback ordering does not establish that UsageEvents contains every pause.
+This proves the cause of this active incident; it does not establish the cause of every
+historical or locked-screen false drain.
+
+**0.4.4 / code 12** removes the package/class entry on a matching STOPPED regardless of
+whether PAUSED was delivered. A stop older than that entry's latest state is still ignored.
+Other resumed activities, paused picture-in-picture activities, DM masking and settled
+replay remain independent. Public UsageEvents does not expose instance identity: a later
+stop from an older same-class instance can still remove a newer one until its next resume.
+That ambiguity is now explicit rather than inferred away as a guarantee.
+
+### Current incident repair
+
+The stale settled observer would survive an APK update because its original stop was
+already outside the replay window. A one-use helper therefore removed only the uniquely
+matched modal entry, preserving the settled boundary, clock anchors, screen/lock state and
+pending screen events. The original database and installed APK were backed up first. The
+protected owner ignores shell force-stop, so the process was briefly paused for the SQLite
+transaction, then killed and restarted after committed read-back. No owner or protection
+policy was removed.
+
+The repair used the first inspected settled charge of **486,584 ms** as its baseline.
+Fresh usage-event history confirmed no target lifecycle activity throughout the observed
+interval; screen/lock transitions could pause the phantom but could not make any of its
+additional charges legitimate. The transaction refunded **808,854 ms (13 min 28.854 s)**,
+from **1,295,438 ms** back to **486,584 ms**, and recorded
+`incident_phantom_usage_repair`. Earlier charges, including the interval before the first
+database inspection, were retained because its historical DM masking was not recorded.
+The helper checked the exact retained activity and rejected unexpected activity events,
+recovery state or a refund exceeding the observed interval. Read-back verified the empty
+observer, preserved baseline charge, audit record and SQLite integrity. The helper was
+removed from the phone.
+
+### Verification
+
+| Evidence | Result |
+|---|---|
+| Tracker regressions before the implementation | Four assertions failed against the old implementation, including missing PAUSED, overlay return/restart and independent resumed targets |
+| JVM suite | **136 tests passed**, zero failures/errors |
+| Coordinator/DAO/migration suites on disposable `doomstop_bug_test` / `emulator-5580` | **55 tests passed**, zero failures/ignored, including missing-pause settlement across a coordinator restart; no instrumented tests ran on the phone |
+| Debug, instrumented-test and signed release builds; Android lint | **Passed** with the documented local AAPT2 override; lint completed successfully |
+| Signature and in-place phone update | Code 12 certificate matched code 10; `adb install -r` succeeded; installed version is **0.4.4 / code 12**, non-debuggable, with device ownership retained |
+| Real-device idle observation and release-safe journal export | **Not counting**, 21 min 54 s remaining and settled charge 486,584 ms across post-repair/release idle checks; journal export works on the non-debuggable release |
+| Real-device foreground/exit smoke test | Opening Instagram changed the notification to **Counting now** (21 min 52 s, then 21 min 45 s). Returning Home changed it to **Not counting**, 21 min 43 s; that exact remaining balance stayed unchanged over a further 40 seconds |
+
+The exact missing-pause sequence is covered by the tracker regressions; the phone smoke
+test checks ordinary foreground use and exit, without claiming another missing pause was
+reproduced on demand.
+
+### Full allowance restored at the owner's request
+
+After the owner explicitly requested the full allowance for today, a second backed-up,
+one-use transaction set **2026-10-19 chargedMs from 497,643 to zero** and added an
+`incident_usage_reset` audit record. It required the expected day and old charge, no
+visible/retained target activity, no pending target lifecycle events and no recovery.
+Read-back compared every table: only that day's charged amount, the new audit row and
+its sequence counter changed; SQLite integrity remained valid. Base allowance stayed
+**1,800,000 ms**, with no carryover or extension, restoring the full **30 minutes**.
+
+A temporary same-key debuggable **code 13** enabled the one-use inspection. The helper
+and build override remain outside the application and repository; the helper was removed
+from the phone after use. Normal non-debuggable **0.4.4 / code 14** replaces this temporary
+build. This does not add an allowance-reset endpoint or change the PIN-authorized flows.
+
+Code 14's same-key, non-debuggable update installed successfully with device ownership
+retained. Its release-safe export confirmed **chargedMs=0**, base allowance 1,800,000 ms,
+no carryover or extension and no recovery request. A fresh **136-test JVM run**, debug and
+signed release builds, and Android lint passed again on the final code 14 tree. The 55
+emulator tests above exercised the same Kotlin behavior before the packaging-only version
+increments for inspection and restoration.

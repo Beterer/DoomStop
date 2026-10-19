@@ -71,6 +71,19 @@ Stated plainly, because a limiter that overstates its reach is worse than none:
   the instant they occur, so charges are committed on a lag and the unsettled tail is only
   estimated. Enforcement still uses the estimate, so cut-off accuracy is unaffected; what
   the lag buys is that a late event corrects an interval before anything is written for it.
+- **Usage events can omit a pause before a stop.** Version 0.4.4 honors the stop anyway,
+  fixing a measured Pixel incident where Instagram kept counting on the home screen.
+  Activity identity remains package plus class because instance IDs are not public API.
+  A later stop from an older instance of the same class can therefore end metering for a
+  newer instance until its next resume event; split-screen activities with different keys
+  and paused picture-in-picture activities remain tracked independently.
+- **Overnight accounting faults need a trace.** Version 0.4.3 keeps a local journal of
+  settled debits, target lifecycle events, screen/lock state, live corrections and clock
+  gaps, with five-minute idle heartbeats. It retains up to seven days and 20,000 trace
+  records (whichever limit is reached first), without messages, URLs, activity class names
+  or PIN data. A second false-drain report on 2026-10-08 has no confirmed root cause yet;
+  adding diagnostics does not establish that overnight metering is fixed. Export promptly
+  using `scripts/Export-DoomStopDiagnostics.ps1`; see the setup/recovery guide, section 9.
 - **The accounting clock is not the phone's clock.** It advances by measured elapsed time,
   and the system clock is adopted only while the two agree. A larger disagreement is refused
   and needs the PIN holder, which also means a genuinely corrected clock needs acknowledging.

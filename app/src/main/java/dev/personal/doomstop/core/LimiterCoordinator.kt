@@ -52,6 +52,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import org.json.JSONArray
+import org.json.JSONObject
 
 /** What woke the coordinator up. Recorded in diagnostics; does not change the arithmetic. */
 enum class Trigger {
@@ -152,6 +154,9 @@ class LimiterCoordinator(
 
     /** Suppresses repeated identical diagnostics so one bad clock cannot flood the log. */
     private val recentDiagnostics = HashMap<String, Long>()
+    private var lastTraceElapsedMs: Long? = null
+    private var lastTraceState: String? = null
+    private var lastTracePruneElapsedMs: Long? = null
 
     private val _status = MutableStateFlow(LimiterStatus.initial(defaultSettings()))
     val status: StateFlow<LimiterStatus> = _status.asStateFlow()
@@ -298,6 +303,21 @@ class LimiterCoordinator(
             )
         }
 
+        val trace = accountingTrace(
+            trigger = trigger.name,
+            previous = previous,
+            checkpoint = checkpoint,
+            slices = accounting.slices,
+            events = newEvents,
+            transitions = settledTransitions,
+            dropped = tooLate,
+            reportedWallMs = reportedWallMs,
+            acceptedNowMs = acceptedNowMs,
+            nowElapsedMs = nowElapsedMs,
+            bootId = bootId,
+            usageAvailable = read.available,
+        )
+
         // Persist accounting BEFORE deciding whether targets stay available.
         dao.applyAccounting(
             slices = accounting.slices,
@@ -305,7 +325,17 @@ class LimiterCoordinator(
             checkpoint = CheckpointEntity.from(checkpoint),
             retainedEvents = newEvents.map { PendingEventEntity.from(it) },
             settledThroughWallMs = settledEndMs,
+            diagnostic = trace,
         )
+        if (trace != null) {
+            lastTraceElapsedMs = nowElapsedMs
+            lastTraceState = traceState()
+        }
+        if (lastTracePruneElapsedMs == null || nowElapsedMs - requireNotNull(lastTracePruneElapsedMs) >= TRACE_PRUNE_INTERVAL_MS) {
+            runCatching { dao.pruneAccountingTraces(acceptedNowMs - TRACE_RETENTION_MS, MAX_ACCOUNTING_TRACES) }
+                .onFailure { Log.w(TAG, "could not prune accounting journal", it) }
+            lastTracePruneElapsedMs = nowElapsedMs
+        }
         accounting.anomalies.forEach { recordAnomaly(it, acceptedNowMs) }
         checkpoint.recovery?.let {
             if (previous.recovery == null) {
@@ -611,6 +641,21 @@ class LimiterCoordinator(
             checkpoint = CheckpointEntity.from(flushed.checkpoint),
             retainedEvents = emptyList(),
             settledThroughWallMs = flushed.checkpoint.settledWallMs,
+            diagnostic = accountingTrace(
+                trigger = "FLUSH_OPEN_TAIL",
+                previous = previous,
+                checkpoint = flushed.checkpoint,
+                slices = flushed.slices,
+                events = retained,
+                transitions = transitions,
+                dropped = emptyList(),
+                reportedWallMs = previous.lastWallMs,
+                acceptedNowMs = previous.lastWallMs,
+                nowElapsedMs = previous.lastElapsedMs,
+                bootId = previous.bootId,
+                usageAvailable = false,
+                force = true,
+            ),
         )
         if (flushed.totalChargedMs > 0) {
             recordDiagnostic(
@@ -1233,6 +1278,81 @@ class LimiterCoordinator(
             recordDiagnostic("unreconciled_gap", "${anomaly.gapMs} ms: ${anomaly.reason}", nowWallMs)
     }
 
+    /** Only target identities and screen/lock metadata; no activity names or window content. */
+    private fun traceState(): String = listOf(
+        tracker.screenIsInteractive, tracker.keyguardIsShown, tracker.isVisible,
+        tracker.isMasked(InstagramGuard.INSTAGRAM_PACKAGE), instagramGuardProbe.connected,
+    ).joinToString("|")
+
+    private fun accountingTrace(
+        trigger: String,
+        previous: Checkpoint,
+        checkpoint: Checkpoint,
+        slices: List<DaySlice>,
+        events: List<TrackedEvent>,
+        transitions: List<VisibilityTransition>,
+        dropped: List<TrackedEvent>,
+        reportedWallMs: Long,
+        acceptedNowMs: Long,
+        nowElapsedMs: Long,
+        bootId: String,
+        usageAvailable: Boolean,
+        force: Boolean = false,
+    ): DiagnosticEventEntity? {
+        fun relevant(event: TrackedEvent): Boolean = event.packageName in TargetPackages.ALL ||
+            event.type !in setOf(TrackedEventType.ACTIVITY_RESUMED, TrackedEventType.ACTIVITY_PAUSED, TrackedEventType.ACTIVITY_STOPPED)
+        val relevantEvents = events.filter(::relevant)
+        val relevantDropped = dropped.filter(::relevant)
+        val heartbeatDue = lastTraceElapsedMs?.let { nowElapsedMs - it >= TRACE_HEARTBEAT_MS } ?: true
+        if (!force && slices.none { it.durationMs > 0 } && relevantEvents.isEmpty() && relevantDropped.isEmpty() &&
+            lastTraceState == traceState() && !heartbeatDue && trigger in setOf(Trigger.POLL.name, Trigger.UI.name)
+        ) return null
+
+        fun eventJson(event: TrackedEvent) = JSONObject()
+            .put("at", event.timestampWallMs)
+            .put("type", event.type.name)
+            .put("target", event.packageName.takeIf { it in TargetPackages.ALL } ?: "system")
+            .put("source", when (event.className) {
+                LIVE_OBSERVATION_CLASS -> "live_screen"
+                MASK_OBSERVATION_CLASS -> "dm_guard"
+                SUSPENSION_OBSERVATION_CLASS -> "suspension_readback"
+                else -> "usage_events"
+            })
+        val detail = JSONObject()
+            .put("schema", 1)
+            .put("trigger", trigger)
+            .put("boot", bootId)
+            .put("previousBoot", previous.bootId)
+            .put("elapsed", nowElapsedMs)
+            .put("previousElapsed", previous.lastElapsedMs)
+            .put("reportedNow", reportedWallMs)
+            .put("acceptedNow", acceptedNowMs)
+            .put("previousNow", previous.lastWallMs)
+            .put("settledFrom", previous.settledWallMs)
+            .put("settledTo", checkpoint.settledWallMs)
+            .put("visibleFrom", previous.targetVisible)
+            .put("interactiveFrom", TrackerState.decode(previous.trackerState)?.screenInteractive ?: JSONObject.NULL)
+            .put("lockedFrom", TrackerState.decode(previous.trackerState)?.keyguardShown ?: JSONObject.NULL)
+            .put("visibleAtSettledEnd", checkpoint.targetVisible)
+            .put("visibleNow", tracker.isVisible)
+            .put("interactive", tracker.screenIsInteractive)
+            .put("locked", tracker.keyguardIsShown)
+            .put("dmMasked", tracker.isMasked(InstagramGuard.INSTAGRAM_PACKAGE))
+            .put("dmGuardConnected", instagramGuardProbe.connected)
+            .put("usageAvailable", usageAvailable)
+            .put("recovery", checkpoint.recovery?.reason ?: JSONObject.NULL)
+            .put("slices", JSONArray(slices.map { JSONObject().put("day", it.dayId).put("ms", it.durationMs) }))
+            .put("transitions", JSONArray(transitions.map { JSONObject().put("at", it.atWallMs).put("visible", it.visible) }))
+            .put("events", JSONArray(relevantEvents.takeLast(MAX_TRACE_EVENTS).map(::eventJson)))
+            .put("eventCount", relevantEvents.size)
+            .put("dropped", JSONArray(relevantDropped.takeLast(MAX_TRACE_EVENTS).map(::eventJson)))
+            .put("droppedCount", relevantDropped.size)
+            .put("activities", JSONArray(tracker.snapshot().activities.map {
+                JSONObject().put("target", it.packageName).put("state", it.state).put("ageMs", it.ageMs)
+            }))
+        return DiagnosticEventEntity(atWallMs = acceptedNowMs, type = "accounting_trace", detail = detail.toString())
+    }
+
     /** Diagnostics carry no PIN and no window content -- only protection events. */
     private suspend fun recordDiagnostic(type: String, detail: String, nowWallMs: Long) {
         val key = "$type|$detail"
@@ -1305,6 +1425,11 @@ class LimiterCoordinator(
         private const val DIAGNOSTIC_DEDUP_MS = 60_000L
         private const val MAX_DEDUP_KEYS = 64
         private const val MAX_SURFACED_ANOMALIES = 8
+        private const val TRACE_HEARTBEAT_MS = 5L * 60_000L
+        private const val TRACE_PRUNE_INTERVAL_MS = 10L * 60_000L
+        private const val TRACE_RETENTION_MS = 7L * 24L * 60L * 60_000L
+        private const val MAX_ACCOUNTING_TRACES = 20_000
+        private const val MAX_TRACE_EVENTS = 128
 
         private const val LIST_SEPARATOR = ","
 

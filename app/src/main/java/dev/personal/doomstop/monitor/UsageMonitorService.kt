@@ -8,6 +8,7 @@ import android.content.IntentFilter
 import android.content.pm.ServiceInfo
 import android.os.IBinder
 import android.util.Log
+import androidx.room.withTransaction
 import dev.personal.doomstop.DoomStopApp
 import dev.personal.doomstop.core.LimiterCoordinator
 import dev.personal.doomstop.core.LimiterStatus
@@ -20,6 +21,12 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import java.io.FileDescriptor
+import java.io.PrintWriter
+import java.time.Instant
+import java.time.ZoneId
+import org.json.JSONObject
 
 /**
  * The foreground service that drives metering.
@@ -165,8 +172,64 @@ class UsageMonitorService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
+    /** Android's shell-only dumpsys path also works with a non-debuggable signed release. */
+    override fun dump(fd: FileDescriptor, writer: PrintWriter, args: Array<out String>) {
+        if ("doomstop-diagnostics" !in args) {
+            super.dump(fd, writer, args)
+            return
+        }
+        val app = application as DoomStopApp
+        val afterId = args.firstOrNull { it.startsWith("after=") }?.substringAfter('=')?.toLongOrNull() ?: 0L
+        val requestedThroughId = args.firstOrNull { it.startsWith("through=") }?.substringAfter('=')?.toLongOrNull()
+        runBlocking(Dispatchers.IO) {
+            val (header, records) = app.database.withTransaction {
+                // A small page fits Android's service-dump deadline and bounds main-looper
+                // blocking. The export's first page fixes an upper ID for all later pages.
+                val throughId = requestedThroughId ?: (app.dao.latestDiagnosticId() ?: 0L)
+                val page = app.dao.diagnosticPage(afterId, throughId, DIAGNOSTIC_PAGE_SIZE)
+                val nextId = page.lastOrNull()?.id ?: afterId
+                val settings = app.dao.settings()
+                val checkpoint = app.dao.checkpoint()
+                val now = checkpoint?.lastWallMs ?: System.currentTimeMillis()
+                val dayId = Instant.ofEpochMilli(now).atZone(ZoneId.of(settings?.zoneId ?: "UTC")).toLocalDate().toString()
+                val day = app.dao.day(dayId)
+                val info = packageManager.getPackageInfo(packageName, 0)
+                JSONObject()
+                    .put("type", "snapshot")
+                    .put("schema", 1)
+                    .put("version", info.versionName)
+                    .put("versionCode", info.longVersionCode)
+                    .put("exportedAt", System.currentTimeMillis())
+                    .put("throughId", throughId)
+                    .put("expectedRecordCount", app.dao.diagnosticCountThrough(throughId))
+                    .put("nextId", nextId)
+                    .put("complete", page.size < DIAGNOSTIC_PAGE_SIZE || nextId >= throughId)
+                    .put("day", dayId)
+                    .put("zone", settings?.zoneId ?: JSONObject.NULL)
+                    .put("dailyAllowanceMs", settings?.dailyAllowanceMs ?: JSONObject.NULL)
+                    .put("chargedMs", day?.chargedMs ?: JSONObject.NULL)
+                    .put("carriedInMs", day?.carriedInMs ?: JSONObject.NULL)
+                    .put("extraGrantedMs", day?.extraGrantedMs ?: JSONObject.NULL)
+                    .put("setupCompleted", settings?.setupCompleted ?: false)
+                    .put("maintenanceMode", settings?.maintenanceMode ?: false)
+                    .put("settledThrough", checkpoint?.settledWallMs ?: JSONObject.NULL)
+                    .put("recovery", checkpoint?.recoveryReason ?: JSONObject.NULL)
+                    .put("interactiveNow", AppPermissions.isScreenInteractive(this@UsageMonitorService))
+                    .put("lockedNow", AppPermissions.isKeyguardLocked(this@UsageMonitorService)) to page
+            }
+            writer.println("DOOMSTOP_DIAGNOSTICS_BEGIN")
+            writer.println(header.toString())
+            records.forEach {
+                val detail: Any = if (it.type == "accounting_trace") JSONObject(it.detail) else it.detail
+                writer.println(JSONObject().put("id", it.id).put("at", it.atWallMs).put("type", it.type).put("detail", detail).toString())
+            }
+            writer.println("DOOMSTOP_DIAGNOSTICS_END")
+        }
+    }
+
     companion object {
         private const val TAG = "DoomStopMonitor"
+        private const val DIAGNOSTIC_PAGE_SIZE = 250
 
         /** While a target is on screen the poll IS the cut-off mechanism. */
         const val ACTIVE_INTERVAL_MS = 1_000L
