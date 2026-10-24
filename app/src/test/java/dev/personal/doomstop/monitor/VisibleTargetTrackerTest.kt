@@ -14,6 +14,16 @@ class VisibleTargetTrackerTest {
     private val reddit = TargetPackages.REDDIT
     private val launcher = "com.google.android.apps.nexuslauncher"
 
+    @Test
+    fun `restoring after a selection change drops unselected activities`() {
+        val original = tracker()
+        original.apply(listOf(event(1_000, instagram, TrackedEventType.ACTIVITY_RESUMED)), 2_000)
+        val changed = VisibleTargetTracker(setOf(reddit))
+        changed.restore(original.exportState())
+        assertFalse(changed.isVisible)
+        assertTrue(changed.snapshot().activities.isEmpty())
+    }
+
     private fun tracker(pausedVisibleMs: Long = VisibleTargetTracker.DEFAULT_PAUSED_VISIBLE_MS) =
         VisibleTargetTracker(targets, pausedVisibleMs)
 

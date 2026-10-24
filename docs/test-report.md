@@ -1060,3 +1060,39 @@ no carryover or extension and no recovery request. A fresh **136-test JVM run**,
 signed release builds, and Android lint passed again on the final code 14 tree. The 55
 emulator tests above exercised the same Kotlin behavior before the packaging-only version
 increments for inspection and restoration.
+
+## 17. Configurable setup (0.5.0), 2026-10-24
+
+Setup now offers **Use defaults** (Instagram, TikTok and Reddit sharing 30 minutes/day)
+or **Customize** (a searchable app checklist and one shared daily minutes field). Known
+Lite/regional variants follow the corresponding default service. Allowed daily minutes
+are 0–1440 and at least one app must be selected. Permission actions remain on the setup
+page; the full diagnostics are collapsed. Draft choices are held by the ViewModel while
+visiting the PIN screen or Android permission settings. Later changes use the existing
+PIN-protected settings screen and session checks.
+
+Room **3 → 4** adds only the selected package list, defaulting to the existing six package
+IDs. Existing allowance, balance, carryover, extensions, setup completion, PIN and policy
+ledger remain intact. Selected packages drive the tracker, suspension, status, package
+change receiver and device-protected boot marker. Switching apps settles the old tail
+before atomically saving the new configuration and observer state. Already-visible newly
+selected apps are reconstructed at the switch boundary, without charging earlier usage.
+
+The picker excludes essential system apps, keyboards, all home/calling/SMS handlers, Chrome/WebView
+and permanently blocked alternative browsers. Essential app exclusions are also refreshed
+during enforcement; a newly protected app's DoomStop suspension is released only when its
+original state was known to be unsuspended. Locked boot skips essential apps without
+reading Room or guessing UNKNOWN ledger values. Chrome's fixed site list, permanent
+browser blocks, the best-effort Shorts guard and selected Instagram's DM exemption remain.
+
+| Evidence | Result |
+|---|---|
+| Regressions before the fixes | Removed-target tracker restore failed on the JVM; custom selection initially failed for its absent database column; already-visible added app charged 0 instead of 10 seconds; a saved essential target stayed suspended |
+| JVM suite | **137 passed**, no failures/errors/skips |
+| Coordinator, DAO, migration and app-catalog suites on disposable `doomstop_bug_test` / `emulator-5554` | **67 passed**, no failures/skips. Includes custom-app counting across restart, exhaustion restricted to selected apps, preservation of settled/tail usage, removed-app release, setup saving and bypass rejection, essential-app release, and legacy schema migration |
+| Debug, instrumented-test and signed release builds; Android lint | **Passed** on the final code; lint reported 0 errors and 12 advisory warnings. The local Gradle override used a 4 GiB heap, 1 GiB metaspace and two workers after the host's global 384 MiB metaspace limit stopped the first combined run |
+| UI | Default/custom setup layouts and searchable picker inspected on the disposable emulator using screenshots. Gboard was initially selectable; keyboard exclusion was added and checked in the final catalog suite. Hierarchy extraction returned a null root, so it is not claimed as UI evidence |
+| Phone and real platform enforcement | **Not run**: the phone was disconnected. No phone installation, provisioning or policy changes. The emulator coordinator tests use the fake policy gateway; custom-app DevicePolicyManager suspension, real role changes and locked-boot behavior still need device-owner validation |
+
+Release artifact: **0.5.0 / versionCode 15**, with the existing application ID and release
+signing configuration. `apksigner verify` confirmed the final APK's v2 signature.

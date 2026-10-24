@@ -1,5 +1,7 @@
 package dev.personal.doomstop.admin
 
+import dev.personal.doomstop.config.TargetPackages
+
 /**
  * Everything the coordinator is allowed to ask the platform to do.
  *
@@ -26,9 +28,12 @@ interface DevicePolicyGateway {
      * targets are suspended. All three are explicit on purpose: a caller that forgot one would
      * silently release the package it governs.
      */
-    fun applyEnforcement(suspendTargets: Boolean, suspendYouTube: Boolean, suspendInstagram: Boolean): SuspensionReport
+    fun applyEnforcement(
+        suspendTargets: Boolean, suspendYouTube: Boolean, suspendInstagram: Boolean,
+        targetPackages: Set<String> = TargetPackages.ALL,
+    ): SuspensionReport
     fun release(packages: Set<String>): SuspensionReport
-    fun manageablePackages(): Set<String>
+    fun manageablePackages(targetPackages: Set<String> = TargetPackages.ALL): Set<String>
     fun readSuspended(packageName: String): Boolean?
     fun isInstalled(packageName: String): Boolean
     fun installedTargets(): List<String>

@@ -1,5 +1,7 @@
 package dev.personal.doomstop.config
 
+import dev.personal.doomstop.domain.LimiterSettings
+
 /**
  * The social-media applications metered against the shared daily allowance.
  *
@@ -27,14 +29,15 @@ object TargetPackages {
      * installing one is not a bypass. Listing an ID that is never installed has no
      * effect, but a wrong ID here would suspend an unrelated app, so this set stays short.
      */
-    private val VARIANTS: Set<String> = setOf(
-        "com.instagram.lite",           // Instagram Lite, Meta
-        "com.zhiliaoapp.musically.go",  // TikTok Lite, ByteDance
-        "com.ss.android.ugc.trill",     // TikTok, ByteDance -- ID used in several Asian markets
-    )
+    /** Built-in defaults. The active selection is stored in LimiterSettings. */
+    val ALL: Set<String> = LimiterSettings.DEFAULT_TARGET_PACKAGES
 
-    /** Everything that consumes the shared allowance. */
-    val ALL: Set<String> = setOf(INSTAGRAM, TIKTOK, REDDIT) + VARIANTS
+    fun groupFor(packageName: String): Set<String> = when (packageName) {
+        INSTAGRAM, "com.instagram.lite" -> setOf(INSTAGRAM, "com.instagram.lite")
+        TIKTOK, "com.zhiliaoapp.musically.go", "com.ss.android.ugc.trill" ->
+            setOf(TIKTOK, "com.zhiliaoapp.musically.go", "com.ss.android.ugc.trill")
+        else -> setOf(packageName)
+    }
 
     /**
      * The three services shown on the status screen, in display order. Variants are

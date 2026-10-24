@@ -7,14 +7,23 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.text.input.KeyboardType
+import dev.personal.doomstop.config.AppChoice
+import dev.personal.doomstop.config.TargetPackages
 import dev.personal.doomstop.config.BlockedSites
 import dev.personal.doomstop.core.LimiterStatus
 
@@ -27,6 +36,10 @@ import dev.personal.doomstop.core.LimiterStatus
 @Composable
 fun SetupScreen(
     status: LimiterStatus,
+    apps: List<AppChoice>,
+    preferences: SetupPreferences,
+    busy: Boolean,
+    onPreferencesChange: (SetupPreferences) -> Unit,
     onGrantUsageAccess: () -> Unit,
     onAllowExactAlarms: () -> Unit,
     onOpenAccessibilitySettings: () -> Unit,
@@ -36,6 +49,10 @@ fun SetupScreen(
     onFinishSetup: () -> Unit,
     onBack: () -> Unit,
 ) {
+    var showDiagnostics by rememberSaveable { mutableStateOf(false) }
+    val dailyMs = minutesToMs(preferences.dailyMinutes)
+    val validChoices = preferences.targetPackages.isNotEmpty() && dailyMs != null && dailyMs in 0L..86_400_000L
+    val selectedPackages = if (status.setupCompleted) status.settings.targetPackages else preferences.targetPackages
     Column(
         Modifier
             .fillMaxSize()
@@ -43,19 +60,43 @@ fun SetupScreen(
             .padding(20.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        Text("Setup & diagnostics", style = MaterialTheme.typography.headlineSmall)
+        Text(if (status.setupCompleted) "Setup & diagnostics" else "Set up DoomStop", style = MaterialTheme.typography.headlineSmall)
 
-        SectionCard("Readiness") {
-            for (item in status.readiness) CheckRow(item.label, item.satisfied, item.remedy)
+        if (!status.setupCompleted) SectionCard("Daily limit") {
+            if (!preferences.customize) {
+                Text("Instagram, TikTok and Reddit · 30 minutes a day")
+                Text("One shared allowance. Unused time carries over.", style = MaterialTheme.typography.bodySmall)
+            }
+            if (preferences.customize) {
+                AppSelection(apps, preferences.targetPackages, enabled = !busy) {
+                    onPreferencesChange(preferences.copy(targetPackages = it))
+                }
+                OutlinedTextField(
+                    value = preferences.dailyMinutes,
+                    onValueChange = { onPreferencesChange(preferences.copy(dailyMinutes = it)) },
+                    label = { Text("Daily allowance (minutes)") },
+                    supportingText = { Text("Shared across selected apps. Unused time carries over.") },
+                    isError = dailyMs == null || dailyMs !in 0L..86_400_000L,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    singleLine = true, enabled = !busy, modifier = Modifier.fillMaxWidth(),
+                )
+            }
+            Button(onClick = { onPreferencesChange(SetupPreferences()) }, enabled = !busy, modifier = Modifier.fillMaxWidth()) {
+                Text("Use defaults")
+            }
+            if (!preferences.customize) OutlinedButton(
+                onClick = { onPreferencesChange(preferences.copy(customize = true)) },
+                enabled = !busy, modifier = Modifier.fillMaxWidth(),
+            ) { Text("Customize") }
         }
 
-        SectionCard("Fix what is missing") {
+        SectionCard("Permissions") {
             if (!status.health.usageAccessGranted) {
                 Button(onClick = onGrantUsageAccess, modifier = Modifier.fillMaxWidth()) {
                     Text("Grant Usage access")
                 }
                 Text(
-                    "Device ownership does not grant this. It has to be switched on by hand.",
+                    "Allow DoomStop to count app usage.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -86,14 +127,12 @@ fun SetupScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            if (status.instagramGuard.instagramInstalled && !status.instagramGuard.connected) {
+            if (TargetPackages.INSTAGRAM in selectedPackages && status.instagramGuard.instagramInstalled && !status.instagramGuard.connected) {
                 Button(onClick = onOpenAccessibilitySettings, modifier = Modifier.fillMaxWidth()) {
                     Text("Switch on the messaging guard")
                 }
                 Text(
-                    "Settings > Accessibility > DoomStop messaging guard. It keeps DMs usable after " +
-                        "the limit and stops DM time counting. Until it is on, Instagram is suspended " +
-                        "outright once the limit is reached.",
+                    "Keeps DMs free and available after the limit. Without it, Instagram is paused at the limit.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -114,27 +153,18 @@ fun SetupScreen(
             }
         }
 
-        DeviceOwnerCard(status)
-        ChromePolicyCard(status)
-        ShortsGuardCard(status)
-        InstagramGuardCard(status)
-        SuspensionCard(status)
-        SelfProtectionCard(status)
-        MonitorCard(status)
-
         if (!status.setupCompleted) {
             val blocking = status.unmetPrerequisites
             Button(
                 onClick = onFinishSetup,
-                enabled = blocking.isEmpty(),
+                enabled = !busy && blocking.isEmpty() && validChoices,
                 modifier = Modifier.fillMaxWidth(),
             ) {
-                Text("Finish setup and start enforcing")
+                Text("Finish setup")
             }
             Text(
                 if (blocking.isEmpty()) {
-                    "Enforcement stays off until this is pressed. Metering already runs, so the " +
-                        "first enforced day starts from a monitor that is known to work."
+                    "Your limit starts when you finish setup."
                 } else {
                     "Still missing: " + blocking.joinToString { it.label } +
                         ". These are checked again when the button is pressed, not just here."
@@ -146,6 +176,22 @@ fun SetupScreen(
                     MaterialTheme.colorScheme.error
                 },
             )
+        }
+
+        TextButton(onClick = { showDiagnostics = !showDiagnostics }) {
+            Text(if (showDiagnostics) "Hide diagnostics" else "Show diagnostics")
+        }
+        if (showDiagnostics) {
+            SectionCard("Readiness") {
+                for (item in status.readiness) CheckRow(item.label, item.satisfied, item.remedy)
+            }
+            DeviceOwnerCard(status)
+            ChromePolicyCard(status)
+            ShortsGuardCard(status)
+            InstagramGuardCard(status)
+            SuspensionCard(status)
+            SelfProtectionCard(status)
+            MonitorCard(status)
         }
 
         TextButton(onClick = onBack) { Text("Back") }

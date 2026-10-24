@@ -10,7 +10,8 @@ Jetpack Compose, Room and coroutines, with manual dependency wiring and no DI fr
 Android **device ownership** is required for enforcement; ordinary device-admin permission
 is insufficient.
 
-- Instagram, TikTok and Reddit share one automatically metered daily allowance. Unused
+- Selected apps share one automatically metered daily allowance; setup defaults to
+  Instagram, TikTok and Reddit sharing 30 minutes/day. Later changes require the PIN. Unused
   base allowance carries forward without a cap; PIN-authorized extension time does not.
 - Chrome's social-site `URLBlocklist` and suspension of known alternative browsers apply
   permanently while enforcement is enabled.

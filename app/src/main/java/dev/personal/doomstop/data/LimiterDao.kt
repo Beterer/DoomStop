@@ -147,6 +147,17 @@ abstract class LimiterDao {
 
     // -- composite transactions --------------------------------------------------------
 
+    @Transaction
+    open suspend fun saveConfiguration(settings: SettingsEntity, dayId: String, checkpoint: CheckpointEntity?) {
+        upsertSettings(settings)
+        dayOrCreate(dayId, settings.dailyAllowanceMs)
+        setBaseAllowance(dayId, settings.dailyAllowanceMs)
+        if (checkpoint != null) {
+            clearPendingEvents()
+            upsertCheckpoint(checkpoint)
+        }
+    }
+
     /**
      * Persist an accounting pass atomically: create any missing day rows with the base
      * allowance in force, add each slice's charge, retain the events that belong to the

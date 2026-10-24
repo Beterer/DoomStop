@@ -24,10 +24,26 @@
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
 
     <!--
-      Explicit package visibility for the finite target and browser lists. QUERY_ALL_PACKAGES
-      is deliberately NOT requested: nothing here needs a device-wide app inventory.
+      Launchable apps for the picker, home apps for safety, and explicit policy targets.
+      No QUERY_ALL_PACKAGES permission is needed.
     -->
     <queries>
+        <intent>
+            <action android:name="android.intent.action.DIAL" />
+            <data android:scheme="tel" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.SENDTO" />
+            <data android:scheme="smsto" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.HOME" />
+        </intent>
         <!-- Metered targets -->
         <package android:name="com.instagram.android" />
         <package android:name="com.instagram.lite" />

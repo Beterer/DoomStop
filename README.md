@@ -1,13 +1,19 @@
 # DoomStop
 
-An automatic, shared daily limit for Instagram, TikTok and Reddit on one personal Pixel,
+An automatic, shared daily limit for apps you choose on one personal Pixel,
 enforced with Android device-owner policy.
 
-There is no Start button. Opening a target app starts counting; switching away or locking
-the phone stops it. When the shared allowance runs out, the three apps are suspended. A
+Setup offers **Use defaults** (Instagram, TikTok and Reddit sharing **30 minutes/day**) or
+**Customize** (choose installed apps and daily minutes). Official Lite/regional variants
+follow their service's checkbox. All selected apps share one allowance; later changes need
+the trusted person's PIN. Upgrading keeps existing limits, balances, PIN and default apps.
+
+There is no Start button. Opening a selected app starts counting; switching away or locking
+the phone stops it. When the shared allowance runs out, selected apps are suspended. A
 trusted person holds a six-digit PIN that authorises a fixed extension. Time left unused at
 midnight carries into the next day, with no cap; extension time does not. The three services'
-websites are blocked in Chrome permanently, whether or not app time remains.
+websites are blocked in Chrome permanently, whether or not app time remains or those apps
+are selected.
 
 YouTube stays available, but its Shorts player is closed the moment it opens. That part is
 best-effort rather than a hard limit; what backs it up is that switching the guard off
@@ -31,9 +37,9 @@ Built to [`docs/social-limit-implementation-plan.md`](docs/social-limit-implemen
 | Area | State |
 |---|---|
 | Application, accounting core, enforcement, PIN, UI | Implemented |
-| Unit tests (133, JVM only) | Passing |
-| Instrumented tests (68, emulator) | The device-owner-free ones passed on 0.3.0. The 0.4.0 additions have not been run yet; see `docs/test-report.md` §11 |
-| Android lint | No errors. The only warnings are notices that newer dependency versions exist |
+| Unit tests (137, JVM only) | Passing |
+| Instrumented tests | 67 coordinator/DAO/migration/catalog tests passed on a disposable emulator for 0.5.0. Real device-owner policy suites were not rerun for this change; see `docs/test-report.md` §17 |
+| Android lint | No errors; 12 advisory warnings about dependency versions and KTX suggestions |
 | Gate A — device-owner provisioning | See `docs/test-report.md` |
 | Gate B — actual app suspension | See `docs/test-report.md` |
 | Gate C — Chrome policy without an enterprise backend | See `docs/test-report.md` |
@@ -44,6 +50,7 @@ Built to [`docs/social-limit-implementation-plan.md`](docs/social-limit-implemen
 | YouTube Shorts guard (0.2.0) | Measured on the Pixel 9, including one known Chrome gap; see `docs/test-report.md` §10.2 |
 | Unused-time carryover (0.3.0) | Engine and coordinator tests. Installed on the Pixel 9, where the update carried the previous day's leftover; a real midnight not yet observed there. See `docs/test-report.md` §11 |
 | Instagram messaging mode (0.4.2) | DM recognition and accounting regression coverage; inbox/thread exemption and feed metering measured on the Pixel 9 with IG 448.0.0.52.84. See `docs/test-report.md` §14 for the checks and remaining gaps |
+| Configurable setup (0.5.0) | Default/custom app selection and shared daily minutes. 67 coordinator/DAO/migration/catalog tests passed on a disposable emulator; no phone update or custom-app platform suspension measurement yet. See `docs/test-report.md` §17 |
 
 `docs/test-report.md` records what was measured, on what, and what is still unverified.
 Nothing in this repository claims an enforcement guarantee that has not been demonstrated.
@@ -55,6 +62,12 @@ Stated plainly, because a limiter that overstates its reach is worse than none:
 - **Device ownership is mandatory.** Without it nothing is enforced. Ordinary device
   administrator permission is not enough, and the app reports "not protected" rather than
   pretending.
+- **The app picker covers launchable apps.** DoomStop, Settings, Play Store, installers,
+  the home app, calling/SMS apps, keyboards, Chrome and WebView cannot be selected. Known
+  alternative browsers remain permanently blocked rather than metered. Selecting another
+  app limits its native app only: it does not add that service's websites to Chrome's fixed
+  blocklist. YouTube can also share the daily allowance; the existing best-effort Shorts
+  guard still applies independently. Instagram's DM exemption applies only when selected.
 - **Browser coverage is a hardcoded list.** A browser that is not in
   `config/BlockedBrowsers.kt` is not blocked. WebView-based apps and in-app browsers inside
   unrelated applications are not covered. This is not Internet filtering.

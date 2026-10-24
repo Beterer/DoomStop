@@ -40,8 +40,9 @@ android {
         // 10 was incident inspection; 11 adds a durable accounting journal and ADB export.
         // 12 honors activity stops even when Android omits the preceding pause event.
         // 13 was temporary same-key reset inspection; 14 restores the normal release.
-        versionCode = 14
-        versionName = "0.4.4"
+        // 15 adds selected apps and the shared daily allowance to setup.
+        versionCode = 15
+        versionName = "0.5.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         // Fixtures deliberately leave policy applied so a person can look at the result.

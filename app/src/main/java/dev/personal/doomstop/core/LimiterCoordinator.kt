@@ -5,12 +5,14 @@ import android.util.Log
 import dev.personal.doomstop.admin.ChromePolicyReport
 import dev.personal.doomstop.admin.DevicePolicyGateway
 import dev.personal.doomstop.admin.HardeningOptions
+import dev.personal.doomstop.admin.PackageOutcome
 import dev.personal.doomstop.admin.SelfProtectionReport
 import dev.personal.doomstop.admin.SuspensionReport
 import dev.personal.doomstop.config.BlockedSites
 import dev.personal.doomstop.config.InstagramGuard
 import dev.personal.doomstop.config.ShortsGuard
 import dev.personal.doomstop.config.TargetPackages
+import dev.personal.doomstop.config.AppCatalog
 import dev.personal.doomstop.data.BootMarkerStore
 import dev.personal.doomstop.data.CheckpointEntity
 import dev.personal.doomstop.data.DayBudgetEntity
@@ -124,7 +126,11 @@ class LimiterCoordinator(
 
     private val mutex = Mutex()
 
-    private var tracker = VisibleTargetTracker(TargetPackages.ALL)
+    private var targetPackages = TargetPackages.ALL
+    private var tracker = VisibleTargetTracker(targetPackages)
+    private var lastAppliedTargetPackages: Set<String>? = null
+    private var unselectablePackages: Set<String> = emptySet()
+    private var lastAppSafetySyncElapsedMs: Long? = null
 
     /** False until the durable observer state has been read back in this process. */
     private var observerRestored = false
@@ -175,7 +181,16 @@ class LimiterCoordinator(
         val bootId = clock.bootId()
 
         val settingsEntity = dao.settings() ?: seedDefaultSettings(reportedWallMs)
-        val settings = settingsEntity.toSettings()
+        if (lastAppSafetySyncElapsedMs == null ||
+            nowElapsedMs - lastAppSafetySyncElapsedMs!! >= ENFORCEMENT_RESYNC_MS ||
+            trigger in setOf(Trigger.PACKAGE_CHANGE, Trigger.BOOT, Trigger.ADMIN_ACTION)
+        ) {
+            unselectablePackages = AppCatalog(context).unselectablePackages()
+            lastAppSafetySyncElapsedMs = nowElapsedMs
+        }
+        val storedSettings = settingsEntity.toSettings()
+        val settings = storedSettings.copy(targetPackages = storedSettings.targetPackages - unselectablePackages)
+        targetPackages = settings.targetPackages
         val boundary = boundaryFor(settings)
 
         var previous = dao.checkpoint()?.toCheckpoint()
@@ -258,7 +273,9 @@ class LimiterCoordinator(
         // Instagram DM time is never charged. The guard reports whether a DM screen is on top;
         // that observation masks Instagram in the observer and is written onto the same event
         // stream, so a later replay of this interval reaches the same (un)charged result.
-        val maskCorrection = instagramMaskCorrection(settingsEntity.setupCompleted, acceptedNowMs)
+        val maskCorrection = instagramMaskCorrection(
+            settingsEntity.setupCompleted && TargetPackages.INSTAGRAM in targetPackages, acceptedNowMs,
+        )
         tailTransitions += maskCorrection.transitions
 
         // A package the platform confirms suspended cannot remain a visible activity.
@@ -405,6 +422,7 @@ class LimiterCoordinator(
             youtubeSuspended = shortsGuard.youtubeSuspended,
             instagramSuspended = instagramGuard.instagramSuspended,
             nowWallMs = acceptedNowMs,
+            targetPackages = targetPackages,
         )
 
         deadlines.schedule(
@@ -508,14 +526,15 @@ class LimiterCoordinator(
         }
         val notConnectedForMs = instagramGuardNotConnectedSinceElapsedMs?.let { nowElapsedMs - it } ?: 0L
 
-        val limitReached = decision.suspendTargets &&
+        val selected = TargetPackages.INSTAGRAM in targetPackages
+        val limitReached = selected && decision.suspendTargets &&
             decision.reason == EnforcementReason.ALLOWANCE_EXHAUSTED
-        val suspendForOtherReason = decision.suspendTargets && !limitReached
+        val suspendForOtherReason = selected && decision.suspendTargets && !limitReached
         val instagramSuspended = suspendForOtherReason ||
             InstagramGuard.instagramMustBeSuspended(limitReached, enabled, connected, notConnectedForMs)
 
         val status = InstagramGuardStatus(
-            instagramInstalled = policy.isInstalled(InstagramGuard.INSTAGRAM_PACKAGE),
+            instagramInstalled = selected && policy.isInstalled(InstagramGuard.INSTAGRAM_PACKAGE),
             enabledInSettings = enabled,
             connected = connected,
             messagingModeActive = limitReached && !instagramSuspended,
@@ -563,7 +582,7 @@ class LimiterCoordinator(
         val events = tracker.snapshot().activities
             .map { it.packageName }
             .distinct()
-            .filter { it in TargetPackages.ALL && policy.readSuspended(it) == true }
+            .filter { it in targetPackages && policy.readSuspended(it) == true }
             .map {
                 TrackedEvent(
                     timestampWallMs = atWallMs,
@@ -590,7 +609,7 @@ class LimiterCoordinator(
      */
     private fun restoreObserver(previous: Checkpoint, nowWallMs: Long): Checkpoint {
         observerRestored = true
-        tracker = VisibleTargetTracker(TargetPackages.ALL)
+        tracker = VisibleTargetTracker(targetPackages)
         val state = TrackerState.decode(previous.trackerState)
         if (state != null) {
             tracker.restore(state)
@@ -724,13 +743,31 @@ class LimiterCoordinator(
         force: Boolean,
     ) {
         val changed = lastAppliedSuspendTargets != suspendTargets ||
+            lastAppliedTargetPackages != targetPackages ||
             lastAppliedSuspendYouTube != suspendYouTube ||
             lastAppliedSuspendInstagram != suspendInstagram
         val due = nowElapsedMs - lastEnforcementSyncElapsedMs >= ENFORCEMENT_RESYNC_MS
         if (!force && !changed && !due) return
 
         recordSuspensionLedger(nowWallMs)
-        val report = policy.applyEnforcement(suspendTargets, suspendYouTube, suspendInstagram)
+        val managed = policy.manageablePackages(targetPackages)
+        val removed = dao.ledger().filter {
+            it.key.startsWith(LEDGER_SUSPENDED_PREFIX) &&
+                it.key.removePrefix(LEDGER_SUSPENDED_PREFIX) !in managed
+        }
+        val released = removed.flatMap { entry ->
+            val pkg = entry.key.removePrefix(LEDGER_SUSPENDED_PREFIX)
+            if (!policy.isInstalled(pkg) || policy.readSuspended(pkg) == false) emptyList()
+            else if (entry.previous == PreviousPolicyState.VALUE && entry.previousValue == "false") {
+                policy.release(setOf(pkg)).outcomes
+            } else if (entry.previous == PreviousPolicyState.UNKNOWN) {
+                listOf(PackageOutcome(pkg, true, false, policy.readSuspended(pkg), "Previous suspension state is unknown; use recovery"))
+            } else emptyList()
+        }
+        val report = SuspensionReport(released + policy.applyEnforcement(
+            suspendTargets, suspendYouTube, suspendInstagram, targetPackages,
+        ).outcomes)
+        lastAppliedTargetPackages = targetPackages.toSet()
         lastAppliedSuspendTargets = suspendTargets
         lastAppliedSuspendYouTube = suspendYouTube
         lastAppliedSuspendInstagram = suspendInstagram
@@ -803,7 +840,7 @@ class LimiterCoordinator(
      */
     private suspend fun recordSuspensionLedger(nowWallMs: Long) {
         loadLedger()
-        for (packageName in policy.manageablePackages()) {
+        for (packageName in policy.manageablePackages(targetPackages)) {
             val key = LEDGER_SUSPENDED_PREFIX + packageName
             if (key in ledgeredKeys) continue
             if (!policy.isInstalled(packageName)) continue
@@ -903,20 +940,54 @@ class LimiterCoordinator(
         dailyAllowanceMs: Long,
         extensionMs: Long,
         zoneId: String,
+        targetPackages: Set<String>? = null,
     ): LimiterStatus {
         mutex.withLock {
             val existing = dao.settings() ?: seedDefaultSettings(clock.wallTimeMs())
+            if (targetPackages != null) AppCatalog(context).validate(targetPackages, existing.toSettings().targetPackages)
+            require(dailyAllowanceMs in 0L..86_400_000L) { "Enter daily minutes from 0 to 1440" }
+            ZoneId.of(zoneId)
             val updated = existing.copy(
                 dailyAllowanceMs = dailyAllowanceMs.coerceAtLeast(0L),
                 extensionMs = extensionMs.coerceAtLeast(0L),
                 zoneId = zoneId,
+                targetPackages = targetPackages?.sorted()?.joinToString(",") ?: existing.targetPackages,
             )
-            dao.upsertSettings(updated)
-            val dayId = boundaryFor(updated.toSettings()).dayIdAt(acceptedNowLocked())
-            dao.dayOrCreate(dayId, updated.dailyAllowanceMs)
-            dao.setBaseAllowance(dayId, updated.dailyAllowanceMs)
+            saveConfigurationLocked(existing, updated)
         }
         return tick(Trigger.ADMIN_ACTION)
+    }
+
+    private suspend fun saveConfigurationLocked(existing: SettingsEntity, updated: SettingsEntity) {
+        val changed = existing.toSettings().targetPackages != updated.toSettings().targetPackages
+        var checkpoint: CheckpointEntity? = null
+        if (changed) {
+            // Settle the entire old selection before the new selection takes effect.
+            tickLocked(Trigger.ADMIN_ACTION)
+            val old = dao.checkpoint()!!.toCheckpoint()
+            restoreObserver(old, old.lastWallMs)
+            val flushed = settleOpenTail(old, existing.toSettings(), boundaryFor(existing.toSettings()), false)
+            val newTracker = VisibleTargetTracker(updated.toSettings().targetPackages)
+            val state = TrackerState.decode(flushed.trackerState) ?: tracker.exportState()
+            val added = updated.toSettings().targetPackages - existing.toSettings().targetPackages
+            val addedActivities = if (added.isEmpty()) emptyList() else {
+                // An added app may already be visible beside DoomStop. Reconstruct its current
+                // state without charging its history or consuming the normal reader's seen cache.
+                val bootStart = (flushed.lastWallMs - clock.elapsedRealtimeMs()).coerceAtLeast(0L)
+                val read = reader.readForReconstruction(added, bootStart, flushed.lastWallMs)
+                check(read.available) { "Usage access is needed to update the app selection" }
+                val addedTracker = VisibleTargetTracker(added)
+                addedTracker.startAt(bootStart)
+                addedTracker.apply(read.events.filter { it.timestampWallMs >= bootStart }, flushed.lastWallMs)
+                addedTracker.exportState().activities
+            }
+            newTracker.restore(state.copy(activities = state.activities + addedActivities))
+            checkpoint = CheckpointEntity.from(flushed.copy(
+                targetVisible = newTracker.isVisible, trackerState = newTracker.exportState().encode(),
+            ))
+        }
+        val dayId = boundaryFor(updated.toSettings()).dayIdAt(acceptedNowLocked())
+        dao.saveConfiguration(updated, dayId, checkpoint)
     }
 
     /** Preview the effect of an allowance change before it is applied. */
@@ -938,12 +1009,18 @@ class LimiterCoordinator(
      * kept, so a failed anti-removal control shows up as an unsatisfied readiness line
      * instead of being hidden behind a green "Protected".
      */
-    suspend fun completeSetup(): SetupOutcome {
+    suspend fun completeSetup(dailyAllowanceMs: Long? = null, targetPackages: Set<String>? = null): SetupOutcome {
         val before = tick(Trigger.ADMIN_ACTION)
         val missing = before.unmetPrerequisites.map { it.label }
         if (missing.isNotEmpty()) return SetupOutcome(false, missing, lastSelfProtection)
 
         mutex.withLock {
+            val existing = dao.settings() ?: seedDefaultSettings(clock.wallTimeMs())
+            if (dailyAllowanceMs != null || targetPackages != null) {
+                check(!existing.setupCompleted) { "Change limits from PIN-protected settings" }
+                require(dailyAllowanceMs == null || dailyAllowanceMs in 0L..86_400_000L) { "Enter daily minutes from 0 to 1440" }
+                if (targetPackages != null) AppCatalog(context).validate(targetPackages, existing.toSettings().targetPackages)
+            }
             val nowWallMs = acceptedNowLocked()
             recordProtectionLedger(nowWallMs)
             val previouslyControlled = dao.ledgerEntry(LEDGER_USER_CONTROL)
@@ -961,8 +1038,11 @@ class LimiterCoordinator(
                     nowWallMs = nowWallMs,
                 )
             }
-            val existing = dao.settings() ?: seedDefaultSettings(nowWallMs)
-            dao.upsertSettings(existing.copy(setupCompleted = true, maintenanceMode = false))
+            saveConfigurationLocked(existing, existing.copy(
+                setupCompleted = true, maintenanceMode = false,
+                dailyAllowanceMs = dailyAllowanceMs ?: existing.dailyAllowanceMs,
+                targetPackages = targetPackages?.sorted()?.joinToString(",") ?: existing.targetPackages,
+            ))
         }
         val after = tick(Trigger.ADMIN_ACTION)
         return SetupOutcome(after.protectionActive, emptyList(), lastSelfProtection)
@@ -983,7 +1063,8 @@ class LimiterCoordinator(
             val current = dao.checkpoint()?.toCheckpoint()
                 ?: Checkpoint.initial(clock.bootId(), clock.elapsedRealtimeMs(), nowWallMs)
             val acknowledged = current.recovery
-            tracker = VisibleTargetTracker(TargetPackages.ALL)
+            targetPackages = dao.settings()?.toSettings()?.targetPackages ?: TargetPackages.ALL
+            tracker = VisibleTargetTracker(targetPackages)
             tracker.startAt(nowWallMs)
             observerRestored = true
             dao.clearPendingEvents()
@@ -1233,7 +1314,7 @@ class LimiterCoordinator(
             setupCompleted = false,
         )
         dao.upsertSettings(seeded)
-        recordDiagnostic("settings_seeded", "proposed defaults, not confirmed choices", nowWallMs)
+        recordDiagnostic("settings_seeded", "default app selection and limits", nowWallMs)
         return seeded
     }
 
@@ -1299,7 +1380,7 @@ class LimiterCoordinator(
         usageAvailable: Boolean,
         force: Boolean = false,
     ): DiagnosticEventEntity? {
-        fun relevant(event: TrackedEvent): Boolean = event.packageName in TargetPackages.ALL ||
+        fun relevant(event: TrackedEvent): Boolean = event.packageName in targetPackages ||
             event.type !in setOf(TrackedEventType.ACTIVITY_RESUMED, TrackedEventType.ACTIVITY_PAUSED, TrackedEventType.ACTIVITY_STOPPED)
         val relevantEvents = events.filter(::relevant)
         val relevantDropped = dropped.filter(::relevant)
@@ -1311,7 +1392,7 @@ class LimiterCoordinator(
         fun eventJson(event: TrackedEvent) = JSONObject()
             .put("at", event.timestampWallMs)
             .put("type", event.type.name)
-            .put("target", event.packageName.takeIf { it in TargetPackages.ALL } ?: "system")
+            .put("target", event.packageName.takeIf { it in targetPackages } ?: "system")
             .put("source", when (event.className) {
                 LIVE_OBSERVATION_CLASS -> "live_screen"
                 MASK_OBSERVATION_CLASS -> "dm_guard"
@@ -1393,7 +1474,7 @@ class LimiterCoordinator(
             checkpointState = checkpoint.state,
             recovery = checkpoint.recovery,
             health = health,
-            installedTargets = policy.installedTargets(),
+            installedTargets = targetPackages.filter { policy.isInstalled(it) },
             installedBlockedBrowsers = policy.installedBlockedBrowsers(),
             suspension = lastSuspensionReport,
             chrome = lastChromeReport,

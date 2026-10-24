@@ -2,6 +2,7 @@ package dev.personal.doomstop.data
 
 import android.content.Context
 import android.content.SharedPreferences
+import dev.personal.doomstop.domain.LimiterSettings
 import androidx.core.content.edit
 
 /**
@@ -59,6 +60,10 @@ class BootMarkerStore(context: Context) {
     val updatedAtWallMs: Long
         get() = prefs.getLong(KEY_UPDATED_AT, 0L)
 
+    val targetPackages: Set<String>
+        get() = prefs.getStringSet(KEY_TARGET_PACKAGES, null)?.toSet()
+            ?: LimiterSettings.DEFAULT_TARGET_PACKAGES
+
     /**
      * Called on every tick, so it writes only when something actually changed. That keeps a
      * once-per-second loop off the disk, and makes the rare real write cheap enough to
@@ -71,11 +76,13 @@ class BootMarkerStore(context: Context) {
         youtubeSuspended: Boolean,
         instagramSuspended: Boolean,
         nowWallMs: Long,
+        targetPackages: Set<String> = LimiterSettings.DEFAULT_TARGET_PACKAGES,
     ) {
         if (this.protectionEnabled == protectionEnabled &&
             this.targetsSuspended == targetsSuspended &&
             this.youtubeSuspended == youtubeSuspended &&
             this.instagramSuspended == instagramSuspended &&
+            this.targetPackages == targetPackages && prefs.contains(KEY_TARGET_PACKAGES) &&
             prefs.contains(KEY_YOUTUBE_SUSPENDED) &&
             prefs.contains(KEY_INSTAGRAM_SUSPENDED)
         ) return
@@ -85,6 +92,7 @@ class BootMarkerStore(context: Context) {
             putBoolean(KEY_YOUTUBE_SUSPENDED, youtubeSuspended)
             putBoolean(KEY_INSTAGRAM_SUSPENDED, instagramSuspended)
             putLong(KEY_UPDATED_AT, nowWallMs)
+            putStringSet(KEY_TARGET_PACKAGES, targetPackages)
         }
     }
 
@@ -95,5 +103,6 @@ class BootMarkerStore(context: Context) {
         const val KEY_YOUTUBE_SUSPENDED = "youtube_suspended"
         const val KEY_INSTAGRAM_SUSPENDED = "instagram_suspended"
         const val KEY_UPDATED_AT = "updated_at_wall_ms"
+        const val KEY_TARGET_PACKAGES = "target_packages"
     }
 }

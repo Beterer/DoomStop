@@ -17,6 +17,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import dev.personal.doomstop.config.AppChoice
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -42,11 +43,12 @@ import java.time.ZoneId
 @Composable
 fun AdminScreen(
     status: LimiterStatus,
+    apps: List<AppChoice>,
     busy: Boolean,
     restoreReport: RestoreReport?,
     onInteraction: () -> Unit,
     previewAllowance: suspend (Long) -> Pair<Long, Long>,
-    onSave: (dailyMs: Long, extensionMs: Long, zoneId: String) -> Unit,
+    onSave: (dailyMs: Long, extensionMs: Long, zoneId: String, targetPackages: Set<String>) -> Unit,
     onChangePin: () -> Unit,
     onApplyHardening: (HardeningOptions) -> Unit,
     onAcknowledgeRecovery: () -> Unit,
@@ -55,6 +57,7 @@ fun AdminScreen(
     onBack: () -> Unit,
 ) {
     var dailyMinutes by remember(status.settings) { mutableStateOf(formatMinutes(status.settings.dailyAllowanceMs)) }
+    var targetPackages by remember(status.settings) { mutableStateOf(status.settings.targetPackages) }
     var extensionMinutes by remember(status.settings) { mutableStateOf(formatMinutes(status.settings.extensionMs)) }
     var zoneId by remember(status.settings) { mutableStateOf(status.settings.zoneId) }
     var preview by remember { mutableStateOf<Pair<Long, Long>?>(null) }
@@ -88,6 +91,7 @@ fun AdminScreen(
         )
 
         SectionCard("Limits") {
+            AppSelection(apps, targetPackages, enabled = !busy) { targetPackages = it; onInteraction() }
             OutlinedTextField(
                 value = dailyMinutes,
                 onValueChange = { dailyMinutes = it; onInteraction() },
@@ -113,9 +117,8 @@ fun AdminScreen(
                 modifier = Modifier.fillMaxWidth(),
             )
             Text(
-                "30 minutes a day and 10 minutes per extension are PROPOSED defaults, not " +
-                    "choices you have already confirmed. Unused time does not roll over, and " +
-                    "extra time expires at the next reset.",
+                "The daily allowance is shared across selected apps. Unused time carries over; " +
+                    "extension time expires at the next reset.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -132,10 +135,10 @@ fun AdminScreen(
                 }
             }
             Button(
-                enabled = !busy && minutesToMs(dailyMinutes) != null && minutesToMs(extensionMinutes) != null &&
+                enabled = !busy && targetPackages.isNotEmpty() && minutesToMs(dailyMinutes)?.let { it in 0L..86_400_000L } == true && minutesToMs(extensionMinutes) != null &&
                     runCatching { ZoneId.of(zoneId) }.isSuccess,
                 onClick = {
-                    onSave(minutesToMs(dailyMinutes)!!, minutesToMs(extensionMinutes)!!, zoneId)
+                    onSave(minutesToMs(dailyMinutes)!!, minutesToMs(extensionMinutes)!!, zoneId, targetPackages)
                 },
                 modifier = Modifier.fillMaxWidth(),
             ) { Text("Save limits") }

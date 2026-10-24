@@ -235,7 +235,7 @@ class VisibleTargetTracker(
     /** Reinstate a previously exported state. Replaces everything this tracker believes. */
     fun restore(state: TrackerState) {
         activities.clear()
-        for (activity in state.activities.take(MAX_TRACKED_ACTIVITIES)) {
+        for (activity in state.activities.filter { it.packageName in targets }.take(MAX_TRACKED_ACTIVITIES)) {
             activities[keyOf(activity.packageName, activity.className)] = TrackedActivity(
                 packageName = activity.packageName,
                 className = activity.className,
@@ -245,11 +245,11 @@ class VisibleTargetTracker(
             )
         }
         maskedPackages.clear()
-        maskedPackages.addAll(state.maskedPackages)
+        maskedPackages.addAll(state.maskedPackages.filter { it in targets })
         screenInteractive = state.screenInteractive
         keyguardShown = state.keyguardShown
         logicalNowMs = state.logicalNowMs
-        lastVisible = state.lastVisible
+        lastVisible = computeVisible()
     }
 
     fun snapshot(): TrackerSnapshot = TrackerSnapshot(

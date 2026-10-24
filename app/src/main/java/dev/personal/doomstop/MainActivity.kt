@@ -88,6 +88,8 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun DoomStopApp(viewModel: LimiterViewModel, onSecureWindow: (Boolean) -> Unit) {
     val status by viewModel.status.collectAsStateWithLifecycle()
+    val apps by viewModel.apps.collectAsStateWithLifecycle()
+    val setupPreferences by viewModel.setupPreferences.collectAsStateWithLifecycle()
     val screen by viewModel.screen.collectAsStateWithLifecycle()
     val pinError by viewModel.pinError.collectAsStateWithLifecycle()
     val throttle by viewModel.throttle.collectAsStateWithLifecycle()
@@ -100,6 +102,7 @@ private fun DoomStopApp(viewModel: LimiterViewModel, onSecureWindow: (Boolean) -
     // The PIN and settings screens hold sensitive interaction; the status screen does not.
     LaunchedEffect(screen) {
         onSecureWindow(screen is Screen.Pin || screen is Screen.Admin || screen is Screen.ChangePin)
+        if (screen is Screen.Setup || screen is Screen.Admin) viewModel.refreshApps()
     }
 
     LaunchedEffect(toast) {
@@ -114,6 +117,7 @@ private fun DoomStopApp(viewModel: LimiterViewModel, onSecureWindow: (Boolean) -
             when (val current = screen) {
                 Screen.Status -> StatusScreen(
                     status = status,
+                    apps = apps,
                     onRequestMoreTime = { viewModel.show(Screen.Pin(PinPurpose.REQUEST_EXTENSION)) },
                     onOpenSettings = { viewModel.show(Screen.Pin(PinPurpose.OPEN_ADMIN)) },
                     onOpenSetup = { viewModel.show(Screen.Setup) },
@@ -121,6 +125,10 @@ private fun DoomStopApp(viewModel: LimiterViewModel, onSecureWindow: (Boolean) -
 
                 Screen.Setup -> SetupScreen(
                     status = status,
+                    apps = apps,
+                    preferences = setupPreferences,
+                    busy = busy,
+                    onPreferencesChange = viewModel::updateSetupPreferences,
                     onGrantUsageAccess = { context.startActivity(AppPermissions.usageAccessSettingsIntent(context)) },
                     onAllowExactAlarms = { context.startActivity(AppPermissions.exactAlarmSettingsIntent(context)) },
                     onOpenAccessibilitySettings = { context.startActivity(AppPermissions.accessibilitySettingsIntent()) },
@@ -164,6 +172,7 @@ private fun DoomStopApp(viewModel: LimiterViewModel, onSecureWindow: (Boolean) -
 
                 Screen.Admin -> AdminScreen(
                     status = status,
+                    apps = apps,
                     busy = busy,
                     restoreReport = restoreReport,
                     onInteraction = viewModel::noteAdminInteraction,

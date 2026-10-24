@@ -59,6 +59,7 @@ class BootReceiver : BroadcastReceiver() {
             suspendTargets = marker.targetsSuspended,
             suspendYouTube = marker.youtubeSuspended,
             suspendInstagram = marker.targetsSuspended,
+            targetPackages = marker.targetPackages,
         )
         Log.i(TAG, "locked boot: suspension re-applied, allApplied=${report.allApplied}")
     }

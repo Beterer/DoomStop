@@ -6,6 +6,7 @@ import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
+import dev.personal.doomstop.domain.LimiterSettings
 
 /**
  * Local, transactional state. There is no server and no sync; this file is the whole
@@ -32,7 +33,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         DiagnosticEventEntity::class,
         PolicyLedgerEntity::class,
     ],
-    version = 3,
+    version = 4,
     exportSchema = true,
 )
 abstract class LimiterDatabase : RoomDatabase() {
@@ -131,7 +132,14 @@ abstract class LimiterDatabase : RoomDatabase() {
             }
         }
 
-        val MIGRATIONS = arrayOf(MIGRATION_1_2, MIGRATION_2_3)
+        val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE settings ADD COLUMN targetPackages TEXT NOT NULL " +
+                    "DEFAULT '${LimiterSettings.DEFAULT_TARGET_PACKAGES_ENCODED}'")
+            }
+        }
+
+        val MIGRATIONS = arrayOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
 
         fun build(context: Context): LimiterDatabase =
             Room.databaseBuilder(context.applicationContext, LimiterDatabase::class.java, NAME)

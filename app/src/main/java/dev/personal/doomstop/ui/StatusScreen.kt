@@ -17,7 +17,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import dev.personal.doomstop.config.TargetPackages
+import dev.personal.doomstop.config.AppChoice
 import dev.personal.doomstop.core.LimiterStatus
 import dev.personal.doomstop.domain.CheckpointState
 import dev.personal.doomstop.domain.EnforcementReason
@@ -31,6 +31,7 @@ import dev.personal.doomstop.domain.EnforcementReason
 @Composable
 fun StatusScreen(
     status: LimiterStatus,
+    apps: List<AppChoice>,
     onRequestMoreTime: () -> Unit,
     onOpenSettings: () -> Unit,
     onOpenSetup: () -> Unit,
@@ -68,13 +69,13 @@ fun StatusScreen(
         }
 
         SectionCard("Metered apps") {
-            for ((packageName, label) in TargetPackages.DISPLAY) {
-                val installed = packageName in status.installedTargets
+            for (app in apps.filter { app -> app.packages.any { it in status.settings.targetPackages } }) {
+                val installed = app.packages.any { it in status.installedTargets }
                 val suspended = status.suspension?.outcomes
-                    ?.firstOrNull { it.packageName == packageName }
+                    ?.firstOrNull { it.packageName in app.packages && it.installed }
                     ?.actualSuspended
                 StatRow(
-                    label = label,
+                    label = app.label,
                     value = when {
                         !installed -> "not installed"
                         suspended == true -> "paused"
@@ -84,7 +85,7 @@ fun StatusScreen(
                 )
             }
             Text(
-                "Their websites stay blocked in Chrome at all times, including while time remains.",
+                "Instagram, TikTok and Reddit websites stay blocked in Chrome. Other selected apps are limited in the app only.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

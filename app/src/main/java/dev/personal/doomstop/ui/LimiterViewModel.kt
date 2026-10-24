@@ -6,14 +6,19 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import dev.personal.doomstop.DoomStopApp
 import dev.personal.doomstop.admin.HardeningOptions
+import dev.personal.doomstop.config.AppCatalog
+import dev.personal.doomstop.config.AppChoice
 import dev.personal.doomstop.core.LimiterStatus
 import dev.personal.doomstop.core.RestoreReport
 import dev.personal.doomstop.core.Trigger
+import dev.personal.doomstop.domain.LimiterSettings
 import dev.personal.doomstop.monitor.UsageMonitorService
 import dev.personal.doomstop.security.AuthorizationTicket
 import dev.personal.doomstop.security.PinResult
 import dev.personal.doomstop.security.ThrottleState
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -39,6 +44,10 @@ class LimiterViewModel(application: Application) : AndroidViewModel(application)
     private val app = application as DoomStopApp
 
     val status: StateFlow<LimiterStatus> = app.coordinator.status
+    private val _apps = MutableStateFlow<List<AppChoice>>(emptyList())
+    val apps = _apps.asStateFlow()
+    private val _setupPreferences = MutableStateFlow(SetupPreferences())
+    val setupPreferences = _setupPreferences.asStateFlow()
 
     private val _screen = MutableStateFlow<Screen>(Screen.Status)
     val screen: StateFlow<Screen> = _screen.asStateFlow()
@@ -79,7 +88,17 @@ class LimiterViewModel(application: Application) : AndroidViewModel(application)
     private var authorizationGeneration = 0
 
     init {
-        viewModelScope.launch { app.coordinator.tick(Trigger.UI) }
+        viewModelScope.launch {
+            val current = app.coordinator.tick(Trigger.UI)
+            _setupPreferences.value = SetupPreferences(
+                targetPackages = current.settings.targetPackages,
+                dailyMinutes = formatMinutes(current.settings.dailyAllowanceMs),
+                customize = current.settings.targetPackages != LimiterSettings.DEFAULT_TARGET_PACKAGES ||
+                    current.settings.dailyAllowanceMs != LimiterSettings.DEFAULT_DAILY_ALLOWANCE_MS,
+            )
+            if (!current.setupCompleted) _screen.value = Screen.Setup
+            loadApps()
+        }
         viewModelScope.launch { refreshThrottleLoop() }
     }
 
@@ -95,6 +114,16 @@ class LimiterViewModel(application: Application) : AndroidViewModel(application)
         if (screen !is Screen.Admin && screen !is Screen.ChangePin) clearAdminSession()
         _pinError.value = null
         _screen.value = screen
+    }
+
+    private suspend fun loadApps() {
+        _apps.value = withContext(Dispatchers.IO) { AppCatalog(app).apps(status.value.settings.targetPackages) }
+    }
+
+    fun refreshApps() { viewModelScope.launch { loadApps() } }
+
+    fun updateSetupPreferences(preferences: SetupPreferences) {
+        if (!status.value.setupCompleted) _setupPreferences.value = preferences
     }
 
     fun dismissToast() {
@@ -276,7 +305,10 @@ class LimiterViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun completeSetup() = launchBusy {
-        val outcome = app.coordinator.completeSetup()
+        val preferences = _setupPreferences.value
+        val dailyMs = minutesToMs(preferences.dailyMinutes)
+        require(dailyMs != null && dailyMs in 0L..86_400_000L) { "Enter daily minutes from 0 to 1440" }
+        val outcome = app.coordinator.completeSetup(dailyMs, preferences.targetPackages)
         _toast.value = when {
             outcome.missing.isNotEmpty() ->
                 Toast("Not started: ${outcome.missing.joinToString()}", isError = true)
@@ -296,8 +328,9 @@ class LimiterViewModel(application: Application) : AndroidViewModel(application)
 
     // -- admin actions ----------------------------------------------------------------------
 
-    fun updateSettings(dailyAllowanceMs: Long, extensionMs: Long, zoneId: String) = requireAdmin {
-        app.coordinator.updateSettings(dailyAllowanceMs, extensionMs, zoneId)
+    fun updateSettings(dailyAllowanceMs: Long, extensionMs: Long, zoneId: String, targetPackages: Set<String>) = requireAdmin {
+        app.coordinator.updateSettings(dailyAllowanceMs, extensionMs, zoneId, targetPackages)
+        loadApps()
         _toast.value = Toast("Limits updated")
     }
 

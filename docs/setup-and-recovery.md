@@ -69,8 +69,15 @@ step, and only after you have confirmed a signed update installs in place.
 
 ## 3. Finishing setup on the phone
 
-Open DoomStop. It shows a readiness checklist and will not display "Protected" until every
-line passes.
+Open DoomStop. Keep **Use defaults** for Instagram, TikTok and Reddit sharing 30 minutes a
+day, or tap **Customize**, **Choose apps**, and enter daily minutes (0–1440). The checklist
+has a search field; tap **Done** when the app selection is ready. Select at least one app.
+Default services include their known Lite/regional variants. Draft choices survive the PIN
+screen and permission settings. The daily allowance is shared, not separate for each app.
+
+Complete the permission buttons below. **Show diagnostics** expands the full readiness
+checklist and policy details; these are collapsed by default. DoomStop will not display
+"Protected" until the required checks pass.
 
 Five lines are **prerequisites**: the button that starts enforcement stays disabled until
 they pass, and they are checked again when it is pressed rather than only when the screen
@@ -95,7 +102,7 @@ beforehand. After pressing the button, check that they are:
 | This app cannot be uninstalled | Uninstall blocking is in force. Without it the limiter can simply be removed, so a red line here means you are not protected regardless of what else is green. |
 | Task-manager controls disabled for this app | Force-stop and clear-data are blocked. Not supported on every platform build; reported separately for that reason. |
 
-Then press **Finish setup and start enforcing**. Nothing is enforced before this point,
+Then press **Finish setup**. Nothing is enforced before this point,
 though metering already runs, so the first enforced day starts from a monitor known to work.
 The app reports "Protected" only when every line above is green.
 
@@ -150,10 +157,18 @@ suspended and Shorts are unavailable either way. The line says which of the two 
 
 ### Defaults
 
-30 minutes a day and 10 minutes per extension are **proposed defaults, not decisions you
-have already confirmed**. The reset is at midnight in the timezone captured during setup.
-All three are editable behind the PIN. Unused time carries into the next day, with no cap;
-extra time does not, and expires at the next reset.
+Defaults are Instagram, TikTok and Reddit sharing **30 minutes a day**, with **10 minutes
+per extension**. The reset is at midnight in the timezone captured during setup. Apps,
+daily minutes, extension time and timezone are editable in **Settings** behind the PIN.
+Unused time carries into the next day, with no cap; extension time does not. Changing
+apps or daily minutes preserves already charged time, carryover and granted extensions.
+Removing an app releases DoomStop's suspension when its original state was known to be
+unsuspended. An unknown original state still requires explicit recovery, as before.
+
+Setup app choices do not change the permanent Chrome social-site blocklist, known browser
+blocks or the best-effort Shorts guard. Essential phone functions are excluded from the
+picker. An update migrates the app list to the existing defaults without changing limits,
+balances, the PIN or setup completion; existing users are not sent through setup again.
 
 ## 4. Day-to-day
 
@@ -164,7 +179,7 @@ extra time does not, and expires at the next reset.
   up to ten minutes. Past that the app cannot tell whether it is still on screen, so it stops
   guessing: the targets are paused and the PIN holder is asked (see section 9). Turning the
   screen off resolves it without any of that.
-- When the shared allowance runs out, all three are paused. Android shows **"Blocked by
+- When the shared allowance runs out, the selected apps are paused. Android shows **"Blocked by
   work policy"**.
 - **Request more time** asks for the PIN and adds exactly one extension. A fresh PIN entry
   is needed for each one, and repeated taps cannot duplicate a grant.

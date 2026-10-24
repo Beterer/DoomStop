@@ -9,6 +9,7 @@ import dev.personal.doomstop.data.BootMarkerStore
 import dev.personal.doomstop.data.LimiterDatabase
 import dev.personal.doomstop.data.PinVerifierEntity
 import dev.personal.doomstop.data.PreviousPolicyState
+import dev.personal.doomstop.data.PolicyLedgerEntity
 import dev.personal.doomstop.data.SettingsEntity
 import dev.personal.doomstop.domain.CheckpointState
 import dev.personal.doomstop.domain.ClockSource
@@ -199,6 +200,134 @@ class CoordinatorRegressionTest {
     private suspend fun settledChargeMs(dayId: String? = null): Long {
         val day = dayId ?: coordinator.status.value.dayId
         return database.dao().day(day)?.chargedMs ?: 0L
+    }
+
+    @Test
+    fun selectedCustomAppCountsAcrossRestartWhileUnselectedRedditDoesNot() = runTest {
+        val game = "com.example.game"
+        policy = FakePolicyGateway(installed = setOf(game, reddit, "com.android.chrome"))
+        database.openHelper.writableDatabase.execSQL(
+            "UPDATE settings SET targetPackages = ?", arrayOf(game),
+        )
+        restartProcess()
+        coordinator.tick(Trigger.UI)
+        usage.resume(reddit, clock.wallMs)
+        runFor(10_000, steps = 10)
+        assertEquals(0L, coordinator.status.value.chargedMs)
+        usage.stop(reddit, clock.wallMs)
+        usage.resume(game, clock.wallMs)
+        runFor(10_000, steps = 10)
+        restartProcess()
+        runFor(10_000, steps = 10)
+        usage.stop(game, clock.wallMs)
+        runFor(40_000, steps = 20)
+        assertEquals(20_000L, settledChargeMs())
+        assertEquals(listOf(game), coordinator.status.value.installedTargets)
+    }
+
+    @Test
+    fun exhaustionSuspendsOnlySelectedAppsAndLeavesInstagramAlone() = runTest {
+        database.openHelper.writableDatabase.execSQL(
+            "UPDATE settings SET targetPackages = ?", arrayOf(reddit),
+        )
+        restartProcess()
+        coordinator.updateSettings(0L, extensionMs, zone.id)
+        assertEquals(true, policy.suspended[reddit])
+        assertEquals(false, policy.suspended[instagram])
+        assertFalse(coordinator.status.value.instagramGuard.messagingModeActive)
+        assertEquals(setOf(reddit), BootMarkerStore(context).targetPackages)
+    }
+
+    @Test
+    fun changingAppsSettlesOldUsageAndPreservesTheBalance() = runTest {
+        usage.resume(reddit, clock.wallMs)
+        runFor(10_000, steps = 10)
+        coordinator.updateSettings(180_000L, extensionMs, zone.id, setOf(instagram))
+        assertEquals(10_000L, settledChargeMs())
+        assertEquals(180_000L, coordinator.status.value.baseAllowanceMs)
+        assertFalse(coordinator.status.value.targetVisible)
+        restartProcess()
+        runFor(60_000, steps = 30)
+        assertEquals(10_000L, settledChargeMs())
+        assertEquals(setOf(instagram), database.dao().settings()!!.toSettings().targetPackages)
+        assertNull(database.dao().checkpoint()?.recoveryReason)
+    }
+
+    @Test
+    fun addingAnAlreadyVisibleAppCountsOnlyItsUseAfterTheChangeAndSurvivesRestart() = runTest {
+        coordinator.updateSettings(allowanceMs, extensionMs, zone.id, setOf(reddit))
+        usage.resume(instagram, clock.wallMs)
+        runFor(45_000, steps = 15)
+        assertEquals(0L, coordinator.status.value.chargedMs)
+
+        coordinator.updateSettings(allowanceMs, extensionMs, zone.id, setOf(reddit, instagram))
+        runFor(10_000, steps = 10)
+        assertEquals(10_000L, coordinator.status.value.chargedMs)
+        restartProcess()
+        runFor(10_000, steps = 10)
+        usage.stop(instagram, clock.wallMs)
+        runFor(40_000, steps = 20)
+        assertEquals(20_000L, settledChargeMs())
+    }
+
+    @Test
+    fun removingASuspendedAppReleasesItAndKeepsTheSelectedAppLimited() = runTest {
+        coordinator.updateSettings(0L, extensionMs, zone.id)
+        assertEquals(true, policy.suspended[reddit])
+        coordinator.updateSettings(0L, extensionMs, zone.id, setOf(instagram))
+        assertEquals(false, policy.suspended[reddit])
+        assertEquals(true, policy.suspended[instagram])
+        restartProcess()
+        coordinator.tick(Trigger.BOOT)
+        assertEquals(false, policy.suspended[reddit])
+    }
+
+    @Test
+    fun finishingSetupSavesTheChosenAppsAndAllowance() = runTest {
+        database.dao().upsertSettings(database.dao().settings()!!.copy(setupCompleted = false))
+        val result = coordinator.completeSetup(900_000L, setOf(reddit))
+        assertTrue(result.missing.isEmpty())
+        val saved = database.dao().settings()!!
+        assertTrue(saved.setupCompleted)
+        assertEquals(900_000L, saved.dailyAllowanceMs)
+        assertEquals(setOf(reddit), saved.toSettings().targetPackages)
+        assertEquals(900_000L, coordinator.status.value.baseAllowanceMs)
+    }
+
+    @Test
+    fun completedSetupCannotBeUsedToChangeProtectedSettings() = runTest {
+        val before = database.dao().settings()
+        val result = runCatching { coordinator.completeSetup(0L, setOf(reddit)) }
+        assertTrue(result.exceptionOrNull() is IllegalStateException)
+        assertEquals(before, database.dao().settings())
+    }
+
+    @Test
+    fun anEmptySelectionIsRejectedWithoutChangingTheSettings() = runTest {
+        val before = database.dao().settings()
+        val result = runCatching { coordinator.updateSettings(0L, extensionMs, zone.id, emptySet()) }
+        assertTrue(result.exceptionOrNull() is IllegalArgumentException)
+        assertEquals(before, database.dao().settings())
+    }
+
+    @Test
+    fun anEssentialAppInSavedTargetsIsNotCountedAndItsKnownSuspensionIsReleased() = runTest {
+        val essential = "com.android.settings"
+        policy = FakePolicyGateway(installed = setOf(essential, reddit, "com.android.chrome"))
+        policy.suspended[essential] = true
+        database.dao().upsertLedgerEntry(PolicyLedgerEntity(
+            key = LimiterCoordinator.LEDGER_SUSPENDED_PREFIX + essential,
+            previousState = PreviousPolicyState.VALUE.name, previousValue = "false",
+            appliedValue = "true", appliedAtWallMs = clock.wallMs,
+        ))
+        database.openHelper.writableDatabase.execSQL(
+            "UPDATE settings SET targetPackages = ?", arrayOf("$essential,$reddit"),
+        )
+        restartProcess()
+        coordinator.updateSettings(0L, extensionMs, zone.id)
+        assertEquals(false, policy.suspended[essential])
+        assertFalse(essential in coordinator.status.value.settings.targetPackages)
+        assertEquals(true, policy.suspended[reddit])
     }
 
     @Test

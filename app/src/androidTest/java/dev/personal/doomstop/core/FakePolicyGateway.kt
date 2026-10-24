@@ -52,11 +52,12 @@ class FakePolicyGateway(
         suspendTargets: Boolean,
         suspendYouTube: Boolean,
         suspendInstagram: Boolean,
+        targetPackages: Set<String>,
     ): SuspensionReport {
-        val outcomes = (TargetPackages.ALL - TargetPackages.INSTAGRAM).map { outcome(it, suspendTargets) } +
-            outcome(TargetPackages.INSTAGRAM, suspendInstagram) +
+        val outcomes = (targetPackages - TargetPackages.INSTAGRAM - ShortsGuard.YOUTUBE_PACKAGE).map { outcome(it, suspendTargets) } +
+            (if (TargetPackages.INSTAGRAM in targetPackages) listOf(outcome(TargetPackages.INSTAGRAM, suspendInstagram)) else emptyList()) +
             BlockedBrowsers.ALL.map { outcome(it, true) } +
-            outcome(ShortsGuard.YOUTUBE_PACKAGE, suspendYouTube)
+            outcome(ShortsGuard.YOUTUBE_PACKAGE, suspendYouTube || (ShortsGuard.YOUTUBE_PACKAGE in targetPackages && suspendTargets))
         return SuspensionReport(outcomes)
     }
 
@@ -74,8 +75,8 @@ class FakePolicyGateway(
         return PackageOutcome(packageName, true, wanted, wanted)
     }
 
-    override fun manageablePackages(): Set<String> =
-        TargetPackages.ALL + BlockedBrowsers.ALL + ShortsGuard.YOUTUBE_PACKAGE
+    override fun manageablePackages(targetPackages: Set<String>): Set<String> =
+        targetPackages + BlockedBrowsers.ALL + ShortsGuard.YOUTUBE_PACKAGE
 
     override fun readSuspended(packageName: String): Boolean? = when {
         unreadableSuspension -> null

@@ -27,6 +27,8 @@ data class UsageReadResult(
 interface UsageSource {
     fun hasUsageAccess(): Boolean
     fun read(sinceWallMs: Long, nowWallMs: Long): UsageReadResult
+    fun readForReconstruction(targets: Set<String>, sinceWallMs: Long, nowWallMs: Long): UsageReadResult =
+        read(sinceWallMs, nowWallMs)
 }
 
 /**
@@ -59,7 +61,13 @@ class UsageEventReader(private val context: Context) : UsageSource {
      * false` means Usage Access is missing or the query failed, and the caller must not
      * mistake that for idleness.
      */
-    override fun read(sinceWallMs: Long, nowWallMs: Long): UsageReadResult {
+    override fun read(sinceWallMs: Long, nowWallMs: Long): UsageReadResult =
+        readEvents(sinceWallMs, nowWallMs, reconstructTargets = null)
+
+    override fun readForReconstruction(targets: Set<String>, sinceWallMs: Long, nowWallMs: Long): UsageReadResult =
+        readEvents(sinceWallMs, nowWallMs, reconstructTargets = targets)
+
+    private fun readEvents(sinceWallMs: Long, nowWallMs: Long, reconstructTargets: Set<String>?): UsageReadResult {
         if (!hasUsageAccess()) {
             return UsageReadResult(emptyList(), available = false, newCursorWallMs = sinceWallMs, error = "usage access not granted")
         }
@@ -78,11 +86,15 @@ class UsageEventReader(private val context: Context) : UsageSource {
             while (events.hasNextEvent()) {
                 events.getNextEvent(event)
                 val type = mapType(event.eventType) ?: continue
+                val packageName = event.packageName ?: continue
+                if (reconstructTargets != null && packageName !in reconstructTargets && type in setOf(
+                        TrackedEventType.ACTIVITY_RESUMED, TrackedEventType.ACTIVITY_PAUSED, TrackedEventType.ACTIVITY_STOPPED,
+                    )) continue
                 val key = "${event.timeStamp}|${event.packageName}|${event.className}|${event.eventType}"
-                if (!markSeen(key)) continue
+                if (reconstructTargets == null && !markSeen(key)) continue
                 collected += TrackedEvent(
                     timestampWallMs = event.timeStamp,
-                    packageName = event.packageName ?: continue,
+                    packageName = packageName,
                     className = event.className,
                     type = type,
                 )

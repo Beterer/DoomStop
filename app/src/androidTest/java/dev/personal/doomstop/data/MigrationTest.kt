@@ -33,6 +33,37 @@ class MigrationTest {
     )
 
     @Test
+    fun version3KeepsLimitsAndBalancesAndSelectsTheExistingDefaultApps() {
+        val name = "migration-3-4-test.db"
+        helper.createDatabase(name, 3).use { db ->
+            db.execSQL("INSERT INTO settings VALUES (1, 2700000, 300000, 'Europe/Bucharest', 1, 0)")
+            db.execSQL(
+                "INSERT INTO day_budget (dayId, baseAllowanceMs, chargedMs, extraGrantedMs, carriedInMs) " +
+                    "VALUES ('2026-10-24', 2700000, 123456, 300000, 765432)"
+            )
+        }
+        helper.runMigrationsAndValidate(name, 4, true, *LimiterDatabase.MIGRATIONS).use { db ->
+            db.query("SELECT dailyAllowanceMs, extensionMs, setupCompleted, targetPackages FROM settings").use {
+                assertTrue(it.moveToFirst())
+                assertEquals(2_700_000L, it.getLong(0))
+                assertEquals(300_000L, it.getLong(1))
+                assertEquals(1, it.getInt(2))
+                assertEquals(
+                    setOf("com.instagram.android", "com.instagram.lite", "com.zhiliaoapp.musically",
+                        "com.zhiliaoapp.musically.go", "com.ss.android.ugc.trill", "com.reddit.frontpage"),
+                    it.getString(3).split(',').toSet(),
+                )
+            }
+            db.query("SELECT chargedMs, extraGrantedMs, carriedInMs FROM day_budget").use {
+                assertTrue(it.moveToFirst())
+                assertEquals(123_456L, it.getLong(0))
+                assertEquals(300_000L, it.getLong(1))
+                assertEquals(765_432L, it.getLong(2))
+            }
+        }
+    }
+
+    @Test
     fun version1UpgradesWithoutLosingTheBalanceOrTheOutstandingRequest() = runTest {
         helper.createDatabase(databaseName, 1).use { db ->
             db.execSQL(

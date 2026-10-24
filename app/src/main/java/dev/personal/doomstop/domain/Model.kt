@@ -10,14 +10,14 @@ data class LimiterSettings(
     val extensionMs: Long,
     /** Fixed accounting timezone ID, captured at setup (see [DayBoundary]). */
     val zoneId: String,
+    val targetPackages: Set<String> = DEFAULT_TARGET_PACKAGES,
 ) {
     companion object {
-        /**
-         * PROPOSED defaults, not previously confirmed decisions. The plan asks for them to
-         * be labelled as such in the UI and to be editable by the PIN holder.
-         */
+        /** Initial setup defaults; later changes require the PIN. */
         const val DEFAULT_DAILY_ALLOWANCE_MS = 30L * 60L * 1000L
         const val DEFAULT_EXTENSION_MS = 10L * 60L * 1000L
+        const val DEFAULT_TARGET_PACKAGES_ENCODED = "com.instagram.android,com.zhiliaoapp.musically,com.reddit.frontpage,com.instagram.lite,com.zhiliaoapp.musically.go,com.ss.android.ugc.trill"
+        val DEFAULT_TARGET_PACKAGES: Set<String> = DEFAULT_TARGET_PACKAGES_ENCODED.split(',').toSet()
     }
 }
 

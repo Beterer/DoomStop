@@ -22,7 +22,7 @@ fun formatDuration(ms: Long): String {
 fun formatMinutes(ms: Long): String = (ms / 60_000L).toString()
 
 fun minutesToMs(minutes: String): Long? =
-    minutes.trim().toLongOrNull()?.takeIf { it >= 0 }?.times(60_000L)
+    minutes.trim().toLongOrNull()?.takeIf { it in 0L..(Long.MAX_VALUE / 60_000L) }?.times(60_000L)
 
 fun formatWallTime(wallMs: Long, zoneId: String): String = runCatching {
     DateTimeFormatter.ofPattern("EEE HH:mm", Locale.getDefault())

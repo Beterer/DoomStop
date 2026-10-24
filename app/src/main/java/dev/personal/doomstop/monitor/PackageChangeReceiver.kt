@@ -8,7 +8,6 @@ import dev.personal.doomstop.DoomStopApp
 import dev.personal.doomstop.admin.PolicyController
 import dev.personal.doomstop.config.BlockedBrowsers
 import dev.personal.doomstop.config.ShortsGuard
-import dev.personal.doomstop.config.TargetPackages
 import dev.personal.doomstop.core.Trigger
 import dev.personal.doomstop.data.BootMarkerStore
 import kotlinx.coroutines.CoroutineScope
@@ -33,7 +32,8 @@ class PackageChangeReceiver : BroadcastReceiver() {
 
     override fun onReceive(context: Context, intent: Intent) {
         val changed = intent.data?.schemeSpecificPart ?: return
-        if (changed !in TargetPackages.ALL &&
+        val marker = BootMarkerStore(context)
+        if (changed !in marker.targetPackages &&
             changed !in BlockedBrowsers.ALL &&
             changed != ShortsGuard.YOUTUBE_PACKAGE
         ) return
@@ -43,12 +43,12 @@ class PackageChangeReceiver : BroadcastReceiver() {
         // Act immediately with the policy layer, before waiting on the coordinator: for a
         // freshly installed browser every millisecond of this window is measurable.
         val policy = PolicyController(context)
-        if (policy.isDeviceOwner && changed in BlockedBrowsers.ALL) {
-            val marker = BootMarkerStore(context)
+        if (policy.isDeviceOwner && marker.protectionEnabled && changed in BlockedBrowsers.ALL) {
             policy.applyEnforcement(
                 suspendTargets = marker.targetsSuspended,
                 suspendYouTube = marker.youtubeSuspended,
                 suspendInstagram = marker.instagramSuspended,
+                targetPackages = marker.targetPackages,
             )
         }
 

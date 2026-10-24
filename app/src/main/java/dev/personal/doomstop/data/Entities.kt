@@ -1,6 +1,7 @@
 package dev.personal.doomstop.data
 
 import androidx.room.Entity
+import androidx.room.ColumnInfo
 import androidx.room.PrimaryKey
 import dev.personal.doomstop.domain.Checkpoint
 import dev.personal.doomstop.domain.DayBudget
@@ -34,8 +35,13 @@ data class SettingsEntity(
      * just been released.
      */
     val maintenanceMode: Boolean = false,
+    @ColumnInfo(defaultValue = "'${LimiterSettings.DEFAULT_TARGET_PACKAGES_ENCODED}'")
+    val targetPackages: String = LimiterSettings.DEFAULT_TARGET_PACKAGES_ENCODED,
 ) {
-    fun toSettings() = LimiterSettings(dailyAllowanceMs, extensionMs, zoneId)
+    fun toSettings() = LimiterSettings(
+        dailyAllowanceMs, extensionMs, zoneId,
+        targetPackages.split(',').filter { it.isNotBlank() }.toSet(),
+    )
 
     companion object {
         const val SINGLETON_ID = 1

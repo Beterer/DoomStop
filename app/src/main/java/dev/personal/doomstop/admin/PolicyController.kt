@@ -11,6 +11,7 @@ import dev.personal.doomstop.config.BlockedBrowsers
 import dev.personal.doomstop.config.BlockedSites
 import dev.personal.doomstop.config.ShortsGuard
 import dev.personal.doomstop.config.TargetPackages
+import dev.personal.doomstop.config.AppCatalog
 
 /** What happened to one package when suspension was applied and then verified. */
 data class PackageOutcome(
@@ -140,12 +141,20 @@ class PolicyController(private val context: Context) : DevicePolicyGateway {
         suspendTargets: Boolean,
         suspendYouTube: Boolean,
         suspendInstagram: Boolean,
+        targetPackages: Set<String>,
     ): SuspensionReport {
+        val essential = AppCatalog(context).essentialPackages()
+        val safeTargets = targetPackages - essential
         val outcomes = buildList {
-            addAll(setSuspended(TargetPackages.ALL - TargetPackages.INSTAGRAM, suspendTargets))
-            addAll(setSuspended(setOf(TargetPackages.INSTAGRAM), suspendInstagram))
-            addAll(setSuspended(BlockedBrowsers.ALL, true))
-            addAll(setSuspended(setOf(ShortsGuard.YOUTUBE_PACKAGE), suspendYouTube))
+            addAll(setSuspended(safeTargets - TargetPackages.INSTAGRAM - ShortsGuard.YOUTUBE_PACKAGE, suspendTargets))
+            if (TargetPackages.INSTAGRAM in safeTargets) {
+                addAll(setSuspended(setOf(TargetPackages.INSTAGRAM), suspendInstagram))
+            }
+            addAll(setSuspended(BlockedBrowsers.ALL - essential, true))
+            if (ShortsGuard.YOUTUBE_PACKAGE !in essential) {
+                addAll(setSuspended(setOf(ShortsGuard.YOUTUBE_PACKAGE),
+                    suspendYouTube || (ShortsGuard.YOUTUBE_PACKAGE in safeTargets && suspendTargets)))
+            }
         }
         return SuspensionReport(outcomes)
     }
@@ -158,8 +167,8 @@ class PolicyController(private val context: Context) : DevicePolicyGateway {
         SuspensionReport(setSuspended(packages, false))
 
     /** Every package this app is capable of suspending, for reporting and for tests. */
-    override fun manageablePackages(): Set<String> =
-        TargetPackages.ALL + BlockedBrowsers.ALL + ShortsGuard.YOUTUBE_PACKAGE
+    override fun manageablePackages(targetPackages: Set<String>): Set<String> =
+        (targetPackages + BlockedBrowsers.ALL + ShortsGuard.YOUTUBE_PACKAGE) - AppCatalog(context).essentialPackages()
 
     /** Suspension state as the platform reports it. Null when it will not say. */
     override fun readSuspended(packageName: String): Boolean? = if (!isInstalled(packageName)) {
