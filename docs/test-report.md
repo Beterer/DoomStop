@@ -1096,3 +1096,26 @@ browser blocks, the best-effort Shorts guard and selected Instagram's DM exempti
 
 Release artifact: **0.5.0 / versionCode 15**, with the existing application ID and release
 signing configuration. `apksigner verify` confirmed the final APK's v2 signature.
+
+### Pixel 9 update and authorized daily reset, 2026-10-25
+
+The connected Pixel 9 was upgraded in place from **0.4.4 / code 14** to **0.5.0**.
+The installed APK and update certificate matched. Temporary same-key debuggable code 16
+enabled a one-use external reset helper; normal non-debuggable **code 17** then replaced
+it, and the helper was removed. Device ownership remained intact, and `run-as` was denied
+on the final release. The signed release build and its release lint gate passed.
+
+Release-safe diagnostics were exported before the update and after installation. At the
+owner's explicit request, a privately backed-up transaction changed only **2026-10-25
+chargedMs from 1,783,895 to zero**, plus its `incident_usage_reset` audit record and
+sequence counter. It required the inspected values, a fresh checkpoint, no recovery,
+no retained target activity and no pending target lifecycle events. Every other table
+compared unchanged across the transaction, and SQLite integrity passed. Base allowance
+remained **1,800,000 ms**, carryover **27,057 ms**, and extension time **zero**.
+
+The final release export confirmed zero usage, completed setup and no recovery. The
+phone screen showed **0 s used**, **30 min 28 s remaining** (rounded up for display),
+the default apps available and protection healthy. A second export **43 seconds** later
+on Home still showed zero usage and the same allowance. This verifies the legacy default
+configuration after migration and the requested reset; custom-app platform enforcement,
+role changes and locked-boot behavior were not exercised by this operation.

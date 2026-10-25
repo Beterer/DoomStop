@@ -41,7 +41,8 @@ android {
         // 12 honors activity stops even when Android omits the preceding pause event.
         // 13 was temporary same-key reset inspection; 14 restores the normal release.
         // 15 adds selected apps and the shared daily allowance to setup.
-        versionCode = 15
+        // 16 was temporary same-key reset inspection; 17 restores the normal release.
+        versionCode = 17
         versionName = "0.5.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
