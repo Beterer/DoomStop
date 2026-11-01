@@ -54,14 +54,14 @@ class PolicyControllerTest {
         val installed = policy.installedTargets()
         assumeTrue("no target packages installed to suspend", installed.isNotEmpty())
 
-        val suspended = policy.applyEnforcement(suspendTargets = true, suspendYouTube = false, suspendInstagram = true)
+        val suspended = policy.applyEnforcement(suspendTargets = true, suspendInstagram = true)
         assertTrue("failures: ${suspended.failures.map { it.packageName to it.error }}", suspended.allApplied)
         for (packageName in installed) {
             val outcome = suspended.outcomes.first { it.packageName == packageName }
             assertEquals("$packageName should read back as suspended", true, outcome.actualSuspended)
         }
 
-        val released = policy.applyEnforcement(suspendTargets = false, suspendYouTube = false, suspendInstagram = false)
+        val released = policy.applyEnforcement(suspendTargets = false, suspendInstagram = false)
         assertTrue(released.allApplied)
         for (packageName in installed) {
             val outcome = released.outcomes.first { it.packageName == packageName }
@@ -75,7 +75,7 @@ class PolicyControllerTest {
         assumeTrue("no hardcoded browser installed", installedBrowsers.isNotEmpty())
 
         // suspendTargets = false is the "time remaining" case; browsers must not follow it.
-        val report = policy.applyEnforcement(suspendTargets = false, suspendYouTube = false, suspendInstagram = false)
+        val report = policy.applyEnforcement(suspendTargets = false, suspendInstagram = false)
         for (packageName in installedBrowsers) {
             val outcome = report.outcomes.first { it.packageName == packageName }
             assertEquals("$packageName must stay suspended", true, outcome.actualSuspended)
@@ -84,11 +84,11 @@ class PolicyControllerTest {
 
     @Test
     fun chromeAndWebViewAreNeverSuspended() {
-        policy.applyEnforcement(suspendTargets = true, suspendYouTube = true, suspendInstagram = true)
+        policy.applyEnforcement(suspendTargets = true, suspendInstagram = true)
         for (packageName in BlockedBrowsers.NEVER_SUSPEND) {
             assertFalse(
                 "$packageName must never appear in an enforcement report",
-                policy.applyEnforcement(suspendTargets = true, suspendYouTube = true, suspendInstagram = true).outcomes.any { it.packageName == packageName },
+                policy.applyEnforcement(suspendTargets = true, suspendInstagram = true).outcomes.any { it.packageName == packageName },
             )
         }
         // And Chrome must still be usable.
@@ -104,25 +104,23 @@ class PolicyControllerTest {
         // Re-applying enforcement is what a package-added broadcast triggers; it must be
         // idempotent and must reassert, not toggle.
         repeat(3) {
-            val report = policy.applyEnforcement(suspendTargets = true, suspendYouTube = true, suspendInstagram = true)
+            val report = policy.applyEnforcement(suspendTargets = true, suspendInstagram = true)
             assertTrue(report.allApplied)
         }
-        assertTrue(policy.applyEnforcement(suspendTargets = true, suspendYouTube = true, suspendInstagram = true).installed.all { it.actualSuspended == true })
+        assertTrue(policy.applyEnforcement(suspendTargets = true, suspendInstagram = true).installed.filter { it.packageName != ShortsGuard.YOUTUBE_PACKAGE }.all { it.actualSuspended == true })
     }
 
     @Test
-    fun youtubeFollowsTheShortsGuardRuleNotTheAllowance() {
+    fun youtubeStaysAvailableEvenIfAnOldSelectionIncludedTheWholeApp() {
         assumeTrue("YouTube is not installed", policy.isInstalled(ShortsGuard.YOUTUBE_PACKAGE))
-
-        // Guard off while allowance remains: YouTube goes, targets stay.
-        val off = policy.applyEnforcement(suspendTargets = false, suspendYouTube = true, suspendInstagram = false)
-        assertTrue("failures: ${off.failures.map { it.packageName to it.error }}", off.allApplied)
-        assertEquals(true, off.outcomes.first { it.packageName == ShortsGuard.YOUTUBE_PACKAGE }.actualSuspended)
-
-        // Guard back on with the allowance spent: YouTube returns, targets stay suspended.
-        val on = policy.applyEnforcement(suspendTargets = true, suspendYouTube = false, suspendInstagram = true)
-        assertTrue(on.allApplied)
-        assertEquals(false, on.outcomes.first { it.packageName == ShortsGuard.YOUTUBE_PACKAGE }.actualSuspended)
+        for (exhausted in listOf(false, true)) {
+            val report = policy.applyEnforcement(
+                suspendTargets = exhausted, suspendInstagram = exhausted,
+                targetPackages = TargetPackages.ALL + ShortsGuard.YOUTUBE_PACKAGE,
+            )
+            assertTrue(report.allApplied)
+            assertEquals(false, report.outcomes.first { it.packageName == ShortsGuard.YOUTUBE_PACKAGE }.actualSuspended)
+        }
     }
 
     // -- Gate C -------------------------------------------------------------------------

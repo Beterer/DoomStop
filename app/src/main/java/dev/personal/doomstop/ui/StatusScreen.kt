@@ -69,6 +69,14 @@ fun StatusScreen(
         }
 
         SectionCard("Metered apps") {
+            if (status.shortsGuard.youtubeInstalled) {
+                StatRow("YouTube Shorts", when {
+                    !status.shortsGuard.connected -> "guard unavailable"
+                    status.shortsGuard.blockingShorts -> "time unavailable"
+                    else -> "available"
+                })
+                Text("Ordinary YouTube videos and browsing are unmetered.", style = MaterialTheme.typography.bodySmall)
+            }
             for (app in apps.filter { app -> app.packages.any { it in status.settings.targetPackages } }) {
                 val installed = app.packages.any { it in status.installedTargets }
                 val suspended = status.suspension?.outcomes

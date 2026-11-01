@@ -127,7 +127,9 @@ class LimiterCoordinator(
     private val mutex = Mutex()
 
     private var targetPackages = TargetPackages.ALL
-    private var tracker = VisibleTargetTracker(targetPackages)
+    /** YouTube is always observed; its ordinary screens are excluded by a replayable mask. */
+    private val meteredPackages: Set<String> get() = targetPackages + ShortsGuard.YOUTUBE_PACKAGE
+    private var tracker = VisibleTargetTracker(meteredPackages)
     private var lastAppliedTargetPackages: Set<String>? = null
     private var unselectablePackages: Set<String> = emptySet()
     private var lastAppSafetySyncElapsedMs: Long? = null
@@ -137,14 +139,10 @@ class LimiterCoordinator(
 
     /** Last enforcement state actually pushed to the platform, to avoid a DPM call per second. */
     private var lastAppliedSuspendTargets: Boolean? = null
-    private var lastAppliedSuspendYouTube: Boolean? = null
     private var lastAppliedSuspendInstagram: Boolean? = null
     private var lastSuspensionReport: SuspensionReport? = null
 
-    /** When this process first saw the Shorts guard disconnected; null while it is connected. */
-    private var guardNotConnectedSinceElapsedMs: Long? = null
-    private var lastShortsGuard: ShortsGuardStatus? = null
-    /** The same, for the Instagram messaging guard. */
+    /** When this process first saw the Instagram messaging guard disconnected. */
     private var instagramGuardNotConnectedSinceElapsedMs: Long? = null
     private var lastInstagramGuard: InstagramGuardStatus? = null
     private var lastEnforcementSyncElapsedMs = 0L
@@ -214,6 +212,7 @@ class LimiterCoordinator(
         // The observer is rebuilt from the SETTLED snapshot on every pass, not just at
         // process start. The unsettled tail is recomputed from the retained events each
         // time, so carrying a live observer forward would replay the tail on top of itself.
+        val restartingObserver = !observerRestored
         previous = restoreObserver(previous, reportedWallMs)
 
         val bootChanged = previous.bootId != bootId
@@ -252,7 +251,15 @@ class LimiterCoordinator(
             )
         }
 
-        val usable = (stored + fresh).distinctBy { it.key }.sortedBy { it.timestampWallMs }
+        // UsageEvents cannot reconstruct a switch between Shorts and an ordinary video
+        // inside the same activity while this process was down. Keep all observed time up
+        // to the last pass, but exclude YouTube during the unobserved gap. A separate source
+        // identity orders this after any mask change already observed at that boundary.
+        val shortsGap = if (restartingObserver && previous.lastWallMs < acceptedNowMs) listOf(
+            TrackedEvent(previous.lastWallMs, ShortsGuard.YOUTUBE_PACKAGE,
+                SHORTS_GAP_OBSERVATION_CLASS, TrackedEventType.PACKAGE_MASKED),
+        ) else emptyList()
+        val usable = (stored + fresh + shortsGap).distinctBy { it.key }.sortedBy { it.timestampWallMs }
 
         // -- replay: settled first, then the tail that is still open to correction --------
 
@@ -278,6 +285,13 @@ class LimiterCoordinator(
         )
         tailTransitions += maskCorrection.transitions
 
+        // The inverse of Instagram: YouTube contributes only while the guard recognises
+        // Shorts. An absent guard leaves YouTube unmetered and available by user choice.
+        val shortsCorrection = packageMaskCorrection(
+            ShortsGuard.YOUTUBE_PACKAGE, !guardProbe.inShorts(), acceptedNowMs,
+        )
+        tailTransitions += shortsCorrection.transitions
+
         // A package the platform confirms suspended cannot remain a visible activity.
         // This also repairs a retained RESUMED claim when its exit event arrived too late
         // for the accounting window, as observed on the Pixel after the daily limit.
@@ -292,7 +306,7 @@ class LimiterCoordinator(
             settledObserverState = tracker.exportState().encode()
         }
 
-        val newEvents = fresh + correction.events + maskCorrection.events + suspensionCorrection.events
+        val newEvents = fresh + shortsGap + correction.events + maskCorrection.events + shortsCorrection.events + suspensionCorrection.events
 
         val accounting = BudgetEngine.account(
             previous = previous,
@@ -344,6 +358,9 @@ class LimiterCoordinator(
             settledThroughWallMs = settledEndMs,
             diagnostic = trace,
         )
+        // A cancelled/failed first tick must retry the restart-gap mask from the durable
+        // checkpoint. Consume that protection only once its accounting transaction commits.
+        observerRestored = true
         if (trace != null) {
             lastTraceElapsedMs = nowElapsedMs
             lastTraceState = traceState()
@@ -394,7 +411,12 @@ class LimiterCoordinator(
         }
 
         val enforcing = settingsEntity.setupCompleted && !settingsEntity.maintenanceMode
-        val shortsGuard = evaluateShortsGuard(enforcing, nowElapsedMs, acceptedNowMs)
+        val shortsGuard = ShortsGuardStatus(
+            youtubeInstalled = policy.isInstalled(ShortsGuard.YOUTUBE_PACKAGE),
+            enabledInSettings = guardProbe.enabledInSettings(),
+            connected = guardProbe.connected,
+            blockingShorts = enforcing && decision.suspendTargets,
+        )
         val instagramGuard = evaluateInstagramGuard(decision, nowElapsedMs, acceptedNowMs)
 
         if (enforcing) {
@@ -407,7 +429,6 @@ class LimiterCoordinator(
                 trigger == Trigger.GUARD_CHANGE
             syncEnforcement(
                 suspendTargets = decision.suspendTargets,
-                suspendYouTube = shortsGuard.youtubeSuspended,
                 suspendInstagram = instagramGuard.instagramSuspended,
                 nowElapsedMs = nowElapsedMs,
                 nowWallMs = acceptedNowMs,
@@ -419,7 +440,6 @@ class LimiterCoordinator(
         bootMarker.record(
             protectionEnabled = enforcing,
             targetsSuspended = decision.suspendTargets,
-            youtubeSuspended = shortsGuard.youtubeSuspended,
             instagramSuspended = instagramGuard.instagramSuspended,
             nowWallMs = acceptedNowMs,
             targetPackages = targetPackages,
@@ -469,38 +489,6 @@ class LimiterCoordinator(
             )
         }
         return carried
-    }
-
-    /**
-     * The Shorts-guard rule for this pass. The grace clock starts the first time this process
-     * sees the guard disconnected, so a restart gives the system the full allowance to bind
-     * it again before YouTube is suspended.
-     */
-    private suspend fun evaluateShortsGuard(enforcing: Boolean, nowElapsedMs: Long, nowWallMs: Long): ShortsGuardStatus {
-        val connected = guardProbe.connected
-        val enabled = guardProbe.enabledInSettings()
-        if (connected) {
-            guardNotConnectedSinceElapsedMs = null
-        } else if (guardNotConnectedSinceElapsedMs == null) {
-            guardNotConnectedSinceElapsedMs = nowElapsedMs
-        }
-        val notConnectedForMs = guardNotConnectedSinceElapsedMs?.let { nowElapsedMs - it } ?: 0L
-
-        val status = ShortsGuardStatus(
-            youtubeInstalled = policy.isInstalled(ShortsGuard.YOUTUBE_PACKAGE),
-            enabledInSettings = enabled,
-            connected = connected,
-            youtubeSuspended = ShortsGuard.youtubeMustBeSuspended(enforcing, enabled, connected, notConnectedForMs),
-        )
-        if (status.youtubeSuspended && status.youtubeInstalled && lastShortsGuard?.youtubeSuspended != true) {
-            recordDiagnostic(
-                type = "shorts_guard_off",
-                detail = if (enabled) "guard enabled but not running" else "guard switched off in Settings",
-                nowWallMs = nowWallMs,
-            )
-        }
-        lastShortsGuard = status
-        return status
     }
 
     /**
@@ -564,14 +552,20 @@ class LimiterCoordinator(
      * left exactly as it was.
      */
     private fun instagramMaskCorrection(setupCompleted: Boolean, atWallMs: Long): ScreenCorrection {
-        val maskWanted = setupCompleted && instagramGuardProbe.inDirectMessages()
-        if (tracker.isMasked(InstagramGuard.INSTAGRAM_PACKAGE) == maskWanted) {
+        return packageMaskCorrection(
+            InstagramGuard.INSTAGRAM_PACKAGE,
+            setupCompleted && instagramGuardProbe.inDirectMessages(), atWallMs,
+        )
+    }
+
+    private fun packageMaskCorrection(packageName: String, maskWanted: Boolean, atWallMs: Long): ScreenCorrection {
+        if (tracker.isMasked(packageName) == maskWanted) {
             return ScreenCorrection(emptyList(), emptyList())
         }
-        val transitions = tracker.observeMask(InstagramGuard.INSTAGRAM_PACKAGE, maskWanted, atWallMs)
+        val transitions = tracker.observeMask(packageName, maskWanted, atWallMs)
         val event = TrackedEvent(
             atWallMs,
-            InstagramGuard.INSTAGRAM_PACKAGE,
+            packageName,
             MASK_OBSERVATION_CLASS,
             if (maskWanted) TrackedEventType.PACKAGE_MASKED else TrackedEventType.PACKAGE_UNMASKED,
         )
@@ -608,14 +602,20 @@ class LimiterCoordinator(
      * it is the latched recovery path.
      */
     private fun restoreObserver(previous: Checkpoint, nowWallMs: Long): Checkpoint {
-        observerRestored = true
-        tracker = VisibleTargetTracker(targetPackages)
+        tracker = VisibleTargetTracker(meteredPackages)
         val state = TrackerState.decode(previous.trackerState)
         if (state != null) {
-            tracker.restore(state)
+            // Older builds did not observe YouTube. Start it excluded until a Shorts
+            // observation appears in the replay stream; do not charge ordinary videos
+            // between a retained RESUMED event and this build's first guard inspection.
+            val initialState = if (state.activities.none { it.packageName == ShortsGuard.YOUTUBE_PACKAGE }) {
+                state.copy(maskedPackages = (state.maskedPackages + ShortsGuard.YOUTUBE_PACKAGE).distinct())
+            } else state
+            tracker.restore(initialState)
             return previous
         }
         tracker.startAt(previous.settledWallMs)
+        tracker.observeMask(ShortsGuard.YOUTUBE_PACKAGE, true, previous.settledWallMs)
         if (!previous.targetVisible || previous.recovery != null) return previous
         return previous.copy(
             recovery = RecoveryRequest(
@@ -736,7 +736,6 @@ class LimiterCoordinator(
      */
     private suspend fun syncEnforcement(
         suspendTargets: Boolean,
-        suspendYouTube: Boolean,
         suspendInstagram: Boolean,
         nowElapsedMs: Long,
         nowWallMs: Long,
@@ -744,7 +743,6 @@ class LimiterCoordinator(
     ) {
         val changed = lastAppliedSuspendTargets != suspendTargets ||
             lastAppliedTargetPackages != targetPackages ||
-            lastAppliedSuspendYouTube != suspendYouTube ||
             lastAppliedSuspendInstagram != suspendInstagram
         val due = nowElapsedMs - lastEnforcementSyncElapsedMs >= ENFORCEMENT_RESYNC_MS
         if (!force && !changed && !due) return
@@ -765,11 +763,10 @@ class LimiterCoordinator(
             } else emptyList()
         }
         val report = SuspensionReport(released + policy.applyEnforcement(
-            suspendTargets, suspendYouTube, suspendInstagram, targetPackages,
+            suspendTargets, suspendInstagram, targetPackages,
         ).outcomes)
         lastAppliedTargetPackages = targetPackages.toSet()
         lastAppliedSuspendTargets = suspendTargets
-        lastAppliedSuspendYouTube = suspendYouTube
         lastAppliedSuspendInstagram = suspendInstagram
         lastSuspensionReport = report
         lastEnforcementSyncElapsedMs = nowElapsedMs
@@ -967,7 +964,7 @@ class LimiterCoordinator(
             val old = dao.checkpoint()!!.toCheckpoint()
             restoreObserver(old, old.lastWallMs)
             val flushed = settleOpenTail(old, existing.toSettings(), boundaryFor(existing.toSettings()), false)
-            val newTracker = VisibleTargetTracker(updated.toSettings().targetPackages)
+            val newTracker = VisibleTargetTracker(updated.toSettings().targetPackages + ShortsGuard.YOUTUBE_PACKAGE)
             val state = TrackerState.decode(flushed.trackerState) ?: tracker.exportState()
             val added = updated.toSettings().targetPackages - existing.toSettings().targetPackages
             val addedActivities = if (added.isEmpty()) emptyList() else {
@@ -1064,7 +1061,7 @@ class LimiterCoordinator(
                 ?: Checkpoint.initial(clock.bootId(), clock.elapsedRealtimeMs(), nowWallMs)
             val acknowledged = current.recovery
             targetPackages = dao.settings()?.toSettings()?.targetPackages ?: TargetPackages.ALL
-            tracker = VisibleTargetTracker(targetPackages)
+            tracker = VisibleTargetTracker(meteredPackages)
             tracker.startAt(nowWallMs)
             observerRestored = true
             dao.clearPendingEvents()
@@ -1124,12 +1121,10 @@ class LimiterCoordinator(
         bootMarker.record(
             protectionEnabled = false,
             targetsSuspended = false,
-            youtubeSuspended = false,
             instagramSuspended = false,
             nowWallMs = nowWallMs,
         )
         lastAppliedSuspendTargets = null
-        lastAppliedSuspendYouTube = null
         lastAppliedSuspendInstagram = null
         lastChromeReport = null
 
@@ -1180,7 +1175,6 @@ class LimiterCoordinator(
             val settings = dao.settings() ?: seedDefaultSettings(clock.wallTimeMs())
             dao.upsertSettings(settings.copy(maintenanceMode = false))
             lastAppliedSuspendTargets = null
-            lastAppliedSuspendYouTube = null
             lastAppliedSuspendInstagram = null
             lastChromeReport = null
             recordDiagnostic("maintenance_cancelled", "enforcement resumed", clock.wallTimeMs())
@@ -1363,6 +1357,7 @@ class LimiterCoordinator(
     private fun traceState(): String = listOf(
         tracker.screenIsInteractive, tracker.keyguardIsShown, tracker.isVisible,
         tracker.isMasked(InstagramGuard.INSTAGRAM_PACKAGE), instagramGuardProbe.connected,
+        tracker.isMasked(ShortsGuard.YOUTUBE_PACKAGE), guardProbe.connected,
     ).joinToString("|")
 
     private fun accountingTrace(
@@ -1380,7 +1375,7 @@ class LimiterCoordinator(
         usageAvailable: Boolean,
         force: Boolean = false,
     ): DiagnosticEventEntity? {
-        fun relevant(event: TrackedEvent): Boolean = event.packageName in targetPackages ||
+        fun relevant(event: TrackedEvent): Boolean = event.packageName in meteredPackages ||
             event.type !in setOf(TrackedEventType.ACTIVITY_RESUMED, TrackedEventType.ACTIVITY_PAUSED, TrackedEventType.ACTIVITY_STOPPED)
         val relevantEvents = events.filter(::relevant)
         val relevantDropped = dropped.filter(::relevant)
@@ -1392,10 +1387,11 @@ class LimiterCoordinator(
         fun eventJson(event: TrackedEvent) = JSONObject()
             .put("at", event.timestampWallMs)
             .put("type", event.type.name)
-            .put("target", event.packageName.takeIf { it in targetPackages } ?: "system")
+            .put("target", event.packageName.takeIf { it in meteredPackages } ?: "system")
             .put("source", when (event.className) {
                 LIVE_OBSERVATION_CLASS -> "live_screen"
-                MASK_OBSERVATION_CLASS -> "dm_guard"
+                MASK_OBSERVATION_CLASS -> if (event.packageName == ShortsGuard.YOUTUBE_PACKAGE) "shorts_guard" else "dm_guard"
+                SHORTS_GAP_OBSERVATION_CLASS -> "shorts_guard_gap"
                 SUSPENSION_OBSERVATION_CLASS -> "suspension_readback"
                 else -> "usage_events"
             })
@@ -1419,6 +1415,8 @@ class LimiterCoordinator(
             .put("interactive", tracker.screenIsInteractive)
             .put("locked", tracker.keyguardIsShown)
             .put("dmMasked", tracker.isMasked(InstagramGuard.INSTAGRAM_PACKAGE))
+            .put("youtubeMasked", tracker.isMasked(ShortsGuard.YOUTUBE_PACKAGE))
+            .put("shortsGuardConnected", guardProbe.connected)
             .put("dmGuardConnected", instagramGuardProbe.connected)
             .put("usageAvailable", usageAvailable)
             .put("recovery", checkpoint.recovery?.reason ?: JSONObject.NULL)
@@ -1520,6 +1518,8 @@ class LimiterCoordinator(
 
         /** Class name on the synthetic mask/unmask events for Instagram DM exemption. */
         private const val MASK_OBSERVATION_CLASS = "doomstop.mask"
+
+        private const val SHORTS_GAP_OBSERVATION_CLASS = "doomstop.shorts.gap"
 
         /** Class name on a read-back correction for a suspended target. */
         private const val SUSPENSION_OBSERVATION_CLASS = "doomstop.suspended"

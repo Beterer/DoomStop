@@ -133,13 +133,12 @@ class PolicyController(private val context: Context) : DevicePolicyGateway {
      * Apply the whole enforcement picture in one pass: targets other than Instagram follow
      * [suspendTargets], and the hardcoded browsers are ALWAYS suspended regardless of
      * allowance, because they exist to route around the permanent Chrome policy rather than to
-     * consume time. YouTube follows [suspendYouTube], true only while the Shorts guard is off.
+     * consume time. YouTube is always released; only its Shorts screen is limited.
      * Instagram follows [suspendInstagram] so it can be left in DM-only messaging mode while
      * the guard is watching it and hard-suspended when the guard is not.
      */
     override fun applyEnforcement(
         suspendTargets: Boolean,
-        suspendYouTube: Boolean,
         suspendInstagram: Boolean,
         targetPackages: Set<String>,
     ): SuspensionReport {
@@ -153,7 +152,7 @@ class PolicyController(private val context: Context) : DevicePolicyGateway {
             addAll(setSuspended(BlockedBrowsers.ALL - essential, true))
             if (ShortsGuard.YOUTUBE_PACKAGE !in essential) {
                 addAll(setSuspended(setOf(ShortsGuard.YOUTUBE_PACKAGE),
-                    suspendYouTube || (ShortsGuard.YOUTUBE_PACKAGE in safeTargets && suspendTargets)))
+                    false))
             }
         }
         return SuspensionReport(outcomes)

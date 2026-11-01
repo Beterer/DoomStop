@@ -22,14 +22,14 @@ interface DevicePolicyGateway {
     // -- package suspension ---------------------------------------------------------------
 
     /**
-     * [suspendTargets] follows the allowance and applies to every target except Instagram;
-     * [suspendYouTube] follows the Shorts-guard rule; [suspendInstagram] follows the
+     * [suspendTargets] follows the allowance, excluding YouTube and Instagram. YouTube is
+     * always released; [suspendInstagram] follows the
      * messaging-guard rule, so Instagram can be left runnable in DM-only mode while the other
-     * targets are suspended. All three are explicit on purpose: a caller that forgot one would
+     * targets are suspended. Both decisions are explicit: a caller that forgot one would
      * silently release the package it governs.
      */
     fun applyEnforcement(
-        suspendTargets: Boolean, suspendYouTube: Boolean, suspendInstagram: Boolean,
+        suspendTargets: Boolean, suspendInstagram: Boolean,
         targetPackages: Set<String> = TargetPackages.ALL,
     ): SuspensionReport
     fun release(packages: Set<String>): SuspensionReport

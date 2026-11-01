@@ -1119,3 +1119,66 @@ the default apps available and protection healthy. A second export **43 seconds*
 on Home still showed zero usage and the same allowance. This verifies the legacy default
 configuration after migration and the requested reset; custom-app platform enforcement,
 role changes and locked-boot behavior were not exercised by this operation.
+
+## 18. YouTube Shorts share the daily allowance (0.6.0), 2026-11-01/02
+
+YouTube is now observed independently of the app picker. Only a recognised Shorts player
+uses the existing shared allowance; ordinary videos and browsing remain unmetered. The
+accessibility guard exits Shorts when the allowance is unavailable. **YouTube is never
+suspended**, including when the guard is disabled or disconnected. Legacy whole-YouTube
+selections and old boot markers cannot reinstate that suspension. The picker excludes
+YouTube because its Shorts are automatic; existing balances, settings and PIN are retained.
+No Room schema change or migration was needed.
+
+The coordinator records YouTube masks using the same persisted event mechanism as the
+Instagram DM exemption. Known Shorts time survives settlement and restart; a gap while the
+process is down is excluded because UsageEvents cannot reconstruct an in-activity switch
+from Shorts to an ordinary video. That gap protection remains pending if a tick fails
+before its accounting transaction commits. Simultaneously visible selected apps still
+share one counter, rather than adding overlapping seconds twice.
+
+| Evidence | Result |
+|---|---|
+| Regressions against old behavior | Guard-off suspension assertions failed; four new coordinator tests failed because Shorts charged zero and YouTube stayed suspended with its guard off |
+| Restart-gap regressions | A 40-second observed Short followed by 60 seconds of unobserved ordinary video initially charged 100 seconds. The restart test and injected first-tick-failure retry now require exactly 40 seconds |
+| JVM suite | **135 passed**, no failures/errors |
+| Disposable emulator, explicit serial emulator-5556 | **76 coordinator/DAO/migration/catalog tests passed**, no skips/failures. Fake policy gateway; no phone instrumentation or device-owner fixture suites |
+| Android builds and lint | Debug, androidTest and signed release builds passed. Android lint had no errors; advisory notices remain |
+| Pixel 9 / YouTube 21.43.523 | Home feed and normal player stayed at 44 seconds remaining, showing Not counting. A Short remained playable and showed Counting now, decreasing through 41, 24 and 4 seconds to exhaustion |
+| Current Shorts IDs | All four existing marker IDs were present in the current Shorts activity view hierarchy. Runtime guard recognition was demonstrated by the counter; no titles/comments were logged |
+| Guard switched off | YouTube read back suspended=false and remained usable at exhaustion. The counter changed to Not counting. The original accessibility-service list was restored, including the Instagram guard |
+| Shorts picture-in-picture | Initial Back/Home enforcement left a Short playing in PiP. A temporary guard-only test build reproduced this without changing the new day's allowance. The corrected guard found the YouTube PiP window even with the launcher active, logged dismissal accepted=true, removed the PiP and stopped counting |
+
+The PiP fix uses interactive-window retrieval and the public dismiss action on the
+recognised YouTube window. It does not send global media Stop/Pause keys, which could
+affect an unrelated media app. Ordinary YouTube PiP is excluded from the Shorts rule.
+This remains **best-effort accessibility enforcement**, dependent on YouTube's visible IDs
+and the platform exposing the relevant window. The existing Chrome Shorts-path limitation
+is unchanged. Broader OEM/YouTube-version coverage and a full real device-owner policy
+suite were not measured by this change.
+
+The phone began on signed code 17. Same-key temporary code 18 supported inspection; a
+user-authorized five-minute test grant was attempted, but the external helper aborted.
+Read-back confirmed **no test grant persisted**, extraGrantedMs remained zero and SQLite
+integrity was ok. No usage reset/refund was made. Midnight then supplied the normal new
+30-minute day. Temporary code 20/22 exercised the guard's exhaustion branch without
+directly editing the daily limit, balances, PIN or stored enforcement configuration. The
+normal, non-debuggable **0.6.0 / code 23** replaces those fixtures; no test-only condition
+is retained in source or the final APK.
+
+Final normal-release checks on code 23: the installed APK matched the existing certificate,
+Device Owner remained dev.personal.doomstop, and run-as was denied again. The final JVM
+suite passed 135 tests and the four emulator suites passed 76 tests; lint reported zero
+errors and 12 advisory warnings. With the normal quota gate restored, full-screen Shorts
+counted down from 29:05 to 28:56 over the timed sample, and continued counting in PiP on
+the launcher. Dismissing the Short changed the notification to Not counting. Switching
+only the Shorts guard off left a Short playing with the allowance fixed at 28:46; restoring
+the original service list retained both guards. Ordinary video playback and ordinary PiP
+also stayed at 28:46 with Not counting. The daily setting remained 1,800,000 ms,
+extraGrantedMs remained zero, and no recovery was latched.
+
+After closing the test video, two final Home observations 94 seconds apart retained
+chargedMs=74,824 and 28:46 remaining, with Not counting and no recovery. Both original
+accessibility services were enabled again. The installed APK hash matched the verified
+normal release artifact; temporary device helper/dump files were removed and the disposable
+emulator was stopped.

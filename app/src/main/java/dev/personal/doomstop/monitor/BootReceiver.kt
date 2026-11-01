@@ -57,7 +57,6 @@ class BootReceiver : BroadcastReceiver() {
         // here would be an unguarded hole. The post-unlock tick relaxes it once the guard is up.
         val report = policy.applyEnforcement(
             suspendTargets = marker.targetsSuspended,
-            suspendYouTube = marker.youtubeSuspended,
             suspendInstagram = marker.targetsSuspended,
             targetPackages = marker.targetPackages,
         )

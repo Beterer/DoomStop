@@ -29,16 +29,20 @@ interface ShortsGuardProbe {
 
     /** Switched on under Settings > Accessibility, whether or not it is bound yet. */
     fun enabledInSettings(): Boolean
+
+    /** A recognised Shorts player is on top right now. False when the guard is unavailable. */
+    fun inShorts(): Boolean
 }
 
 class AndroidShortsGuardProbe(private val context: Context) : ShortsGuardProbe {
     override val connected: Boolean get() = ShortsGuardService.connected
     override fun enabledInSettings(): Boolean = ShortsGuardService.isEnabledInSettings(context)
+    override fun inShorts(): Boolean = ShortsGuardService.connected && ShortsGuardService.inShorts
 }
 
 /**
- * Backs out of the YouTube Shorts player whenever it appears, leaving the rest of YouTube
- * alone. Best-effort by nature; see [ShortsGuard] for what it can and cannot do.
+ * Reports Shorts visibility for metering, and exits Shorts only when the shared allowance
+ * is unavailable. Ordinary YouTube is always left alone. See [ShortsGuard] for limitations.
  *
  * Privacy: the service configuration limits events to the YouTube package, and the only
  * thing ever inspected is whether one of a handful of view IDs is on screen. No text,
@@ -59,9 +63,8 @@ class ShortsGuardService : AccessibilityService() {
     override fun onServiceConnected() {
         connected = true
         Log.i(TAG, "connected")
-        // Being bound can be what started this process. Make sure the monitor runs, and
-        // tick at once so a YouTube suspended for a disconnected guard is released now.
         UsageMonitorService.start(this)
+        scheduleCheck()
         nudgeCoordinator()
     }
 
@@ -80,20 +83,38 @@ class ShortsGuardService : AccessibilityService() {
         val wait = (lastCheckUptimeMs + CHECK_INTERVAL_MS - SystemClock.uptimeMillis()).coerceAtLeast(0L)
         handler.postDelayed({
             checkPending = false
-            lastCheckUptimeMs = SystemClock.uptimeMillis()
             checkNow()
         }, wait)
     }
 
     private fun checkNow() {
-        if (!enforcing()) return
-        if (!shortsOnScreen()) return
-
         val now = SystemClock.uptimeMillis()
+        lastCheckUptimeMs = now
+        val root = youtubeRoot()
+        val onYouTube = root?.packageName?.toString() == ShortsGuard.YOUTUBE_PACKAGE
+        val shortsVisible = onYouTube && shortsOnScreen(root)
+        val changed = inShorts != shortsVisible
+        inShorts = shortsVisible
+        if (changed) nudgeCoordinator()
+
+        // Quiet videos still need an allowance check, and leaving YouTube must clear the
+        // signal even though the service receives events only from YouTube.
+        if (onYouTube) scheduleCheck()
+        if (!ShortsGuard.shouldBackOut(blockingShorts(), shortsVisible)) return
+
         if (now - lastActionUptimeMs < ACTION_COOLDOWN_MS) return
         lastActionUptimeMs = now
 
-        Log.i(TAG, "Shorts player on screen; pressing Back")
+        // Back/Home can put Shorts into picture-in-picture on current YouTube. Dismiss
+        // that specific window; global media keys could stop an unrelated audio app.
+        val window = root?.window
+        if (window?.isInPictureInPictureMode == true) {
+            val dismissed = window.root?.performAction(AccessibilityNodeInfo.ACTION_DISMISS) == true
+            Log.i(TAG, "Shorts picture-in-picture dismissal accepted=$dismissed")
+            return
+        }
+
+        Log.i(TAG, "Shorts allowance unavailable; pressing Back")
         performGlobalAction(GLOBAL_ACTION_BACK)
         Toast.makeText(this, R.string.shorts_blocked, Toast.LENGTH_SHORT).show()
         handler.postDelayed(::escalateIfStillShowing, ESCALATE_AFTER_MS)
@@ -101,22 +122,30 @@ class ShortsGuardService : AccessibilityService() {
 
     /** Back does not always leave Shorts, for example when a Short was the first screen opened. */
     private fun escalateIfStillShowing() {
-        if (!enforcing() || !shortsOnScreen()) return
+        if (!ShortsGuard.shouldBackOut(blockingShorts(), shortsOnScreen())) return
         Log.i(TAG, "still on Shorts after Back; going Home")
         performGlobalAction(GLOBAL_ACTION_HOME)
     }
 
-    private fun shortsOnScreen(): Boolean {
-        val root: AccessibilityNodeInfo = rootInActiveWindow ?: return false
+    private fun shortsOnScreen(root: AccessibilityNodeInfo? = rootInActiveWindow): Boolean {
+        root ?: return false
         if (root.packageName?.toString() != ShortsGuard.YOUTUBE_PACKAGE) return false
         return ShortsGuard.SHORTS_PLAYER_VIEW_IDS.any { id ->
             root.findAccessibilityNodeInfosByViewId(ShortsGuard.qualified(id)).any { it.isVisibleToUser }
         }
     }
 
-    private fun enforcing(): Boolean {
+    /** A Short in PiP remains visible even when the launcher or another app is active. */
+    private fun youtubeRoot(): AccessibilityNodeInfo? =
+        windows.asSequence()
+            .filter { it.isInPictureInPictureMode }
+            .mapNotNull { it.root }
+            .firstOrNull { shortsOnScreen(it) }
+            ?: rootInActiveWindow
+
+    private fun blockingShorts(): Boolean {
         val status = (application as DoomStopApp).coordinator.status.value
-        return status.setupCompleted && !status.maintenanceMode
+        return status.setupCompleted && !status.maintenanceMode && status.shortsGuard.blockingShorts
     }
 
     private fun nudgeCoordinator() {
@@ -130,9 +159,10 @@ class ShortsGuardService : AccessibilityService() {
     override fun onInterrupt() = Unit
 
     override fun onUnbind(intent: Intent?): Boolean {
-        // Switched off, or the app is being stopped. Tick now so YouTube is suspended at
-        // once rather than at the next poll.
         connected = false
+        inShorts = false
+        handler.removeCallbacksAndMessages(null)
+        checkPending = false
         Log.i(TAG, "unbound")
         nudgeCoordinator()
         return super.onUnbind(intent)
@@ -140,6 +170,7 @@ class ShortsGuardService : AccessibilityService() {
 
     override fun onDestroy() {
         connected = false
+        inShorts = false
         handler.removeCallbacksAndMessages(null)
         scope.cancel()
         super.onDestroy()
@@ -155,6 +186,10 @@ class ShortsGuardService : AccessibilityService() {
         /** Written only by the service instance, which lives in this process. */
         @Volatile
         var connected: Boolean = false
+            private set
+
+        @Volatile
+        var inShorts: Boolean = false
             private set
 
         fun isEnabledInSettings(context: Context): Boolean {

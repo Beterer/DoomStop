@@ -96,7 +96,7 @@ object InstagramGuard {
 
     /**
      * How long the guard may be enabled in Settings but not yet bound before it counts as
-     * off, mirroring [ShortsGuard.BIND_GRACE_MS]: the system binds accessibility services
+     * off: the system binds accessibility services
      * asynchronously after boot and after an update.
      */
     const val BIND_GRACE_MS = 15_000L
@@ -137,7 +137,7 @@ object InstagramGuard {
     }
 
     /**
-     * The rule that gives the guard teeth, the mirror of [ShortsGuard.youtubeMustBeSuspended].
+     * The fallback when the Instagram messaging guard is unavailable.
      *
      * Only consulted while the allowance is exhausted (the coordinator decides that and passes
      * it as [limitReached]); every other reason to suspend targets suspends Instagram outright

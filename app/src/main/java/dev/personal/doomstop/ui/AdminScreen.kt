@@ -117,7 +117,7 @@ fun AdminScreen(
                 modifier = Modifier.fillMaxWidth(),
             )
             Text(
-                "The daily allowance is shared across selected apps. Unused time carries over; " +
+                "The daily allowance is shared across selected apps and YouTube Shorts. Unused time carries over; " +
                     "extension time expires at the next reset.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,

@@ -125,9 +125,9 @@ best-effort and may need updated markers. See `docs/test-report.md` section 14.
 
 ### The YouTube Shorts guard
 
-From 0.2.0 on, DoomStop closes the YouTube Shorts player whenever it opens, and leaves
-ordinary YouTube videos alone. It does this with an accessibility service, which Android
-only lets a person switch on:
+From 0.6.0 on, YouTube Shorts use the shared daily allowance. Ordinary YouTube videos
+and browsing are unmetered. The guard closes Shorts only when time is unavailable.
+It uses an accessibility service, which Android only lets a person switch on:
 
 1. Setup & diagnostics → **Switch on the Shorts guard**, or Settings → Accessibility.
 2. Open **DoomStop Shorts guard** and switch it on. Android warns that the service can see
@@ -144,16 +144,15 @@ adb shell settings put secure enabled_accessibility_services dev.personal.doomst
 That command replaces the whole list, so if another accessibility service is on, read the
 list first with `settings get` and add this one with a `:` separator.
 
-**While the guard is off, the whole YouTube app is suspended.** That rule is what makes the
-guard worth having: switching it off does not give Shorts back, it takes YouTube away. It
-starts working the moment enforcement starts, so right after installing 0.2.0 YouTube is
-paused until the guard is switched on.
+**If the guard stops, YouTube stays available.** Shorts then cannot be recognised, counted
+or closed. This is an intentional availability choice; DoomStop never suspends YouTube.
+Only Shorts are automatically metered, so YouTube is not a whole-app choice in the picker.
 
 Once an accessibility service is on, YouTube offers **"Turn on accessibility controls for the
 video player?"** That is YouTube's own prompt; **Dismiss** is fine.
 
-The readiness line is not part of "Protected", because with the guard off YouTube is
-suspended and Shorts are unavailable either way. The line says which of the two is happening.
+The readiness line reports whether Shorts metering is available. With YouTube installed,
+"Protected" requires the guard to be connected, even though YouTube remains usable without it.
 
 ### Defaults
 
@@ -273,13 +272,13 @@ Losing the signing key means no future version can be installed over the provisi
 and recovering from that needs a factory reset. Back the key up somewhere outside this
 repository.
 
-The Shorts guard stays switched on across an update. Android re-binds it a moment after the
-new version starts, and DoomStop waits up to 15 seconds for that before treating the guard as
-off, so an update does not pause YouTube.
+The Shorts guard stays switched on across an update. Android re-binds it after the new
+version starts. YouTube remains available during that interval.
 
-**After a big YouTube update, check that the guard still recognises Shorts.** Open a Short. If
-it keeps playing, YouTube has renamed the screen elements the guard looks for, which is the
-failure mode the guard cannot report by itself. The fix is to re-measure them: with a Short
+**After a big YouTube update, check that the guard still recognises Shorts.** With time
+remaining, open a Short and confirm DoomStop counts; ordinary videos must not count.
+If Shorts are unmetered despite a connected guard, YouTube may have renamed the screen
+elements it looks for, which is a failure the guard cannot report by itself. The fix is to re-measure them: with a Short
 playing, run `adb shell uiautomator dump`, and compare the `reel_*` resource IDs with
 `SHORTS_PLAYER_VIEW_IDS` in `config/ShortsGuard.kt`. Then take the same dump on the home feed
 and in the ordinary player, and use only IDs that appear on the Shorts screen alone.
@@ -378,9 +377,8 @@ worth understanding:
   allowance. Re-grant usage access and start the monitor.
 - **"Maintenance — not enforcing."** A restore was started and did not finish. Nothing is
   being enforced. Retry it or cancel it from Settings (section 6).
-- **YouTube says it is paused, although no allowance applies to it.** The Shorts guard is not
-  running. Switch on DoomStop Shorts guard under Settings → Accessibility and YouTube comes
-  back within a second.
+- **YouTube says it is paused.** DoomStop 0.6.0 always releases YouTube. Open DoomStop to
+  reconcile any suspension retained from an older version.
 - **"Needs attention — apps paused."** A stretch of time could not be reconstructed, so the
   app refuses to guess. This is **latched**: it does not clear itself when the problem goes
   away, because a later successful reading says nothing about the interval that was missed.

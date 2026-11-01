@@ -46,7 +46,6 @@ class PackageChangeReceiver : BroadcastReceiver() {
         if (policy.isDeviceOwner && marker.protectionEnabled && changed in BlockedBrowsers.ALL) {
             policy.applyEnforcement(
                 suspendTargets = marker.targetsSuspended,
-                suspendYouTube = marker.youtubeSuspended,
                 suspendInstagram = marker.instagramSuspended,
                 targetPackages = marker.targetPackages,
             )

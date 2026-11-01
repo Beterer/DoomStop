@@ -29,21 +29,20 @@ data class ReadinessItem(
 /**
  * The Shorts guard as the platform reports it, and the verdict of the rule built on it.
  *
- * [youtubeSuspended] is what the rule asked for this pass, not a read-back; whether the
- * platform honoured it is in [LimiterStatus.suspension] like every other package.
+ * [blockingShorts] asks the accessibility service to exit Shorts. It never suspends YouTube.
  */
 data class ShortsGuardStatus(
     val youtubeInstalled: Boolean,
     val enabledInSettings: Boolean,
     val connected: Boolean,
-    val youtubeSuspended: Boolean,
+    val blockingShorts: Boolean,
 ) {
     companion object {
         val UNKNOWN = ShortsGuardStatus(
             youtubeInstalled = false,
             enabledInSettings = false,
             connected = false,
-            youtubeSuspended = false,
+            blockingShorts = false,
         )
     }
 }
@@ -126,6 +125,7 @@ data class LimiterStatus(
             health.deviceOwner &&
             health.usageAccessGranted &&
             health.serviceRunning &&
+            (!shortsGuard.youtubeInstalled || shortsGuard.connected) &&
             pinSet &&
             chrome?.storedPolicyVerified == true &&
             suspension?.allApplied == true &&
@@ -192,17 +192,12 @@ data class LimiterStatus(
                 satisfied = selfProtection?.userControlDisabled == true,
                 remedy = "Not supported on every platform build; force-stop may remain available",
             ),
-            // Not part of protectionActive: with the guard off YouTube is suspended, so
-            // Shorts stays unavailable either way. This line says which way it is.
+            // A missing guard leaves YouTube open and makes Shorts metering unavailable.
             ReadinessItem(
                 label = "YouTube Shorts guard running",
                 satisfied = !shortsGuard.youtubeInstalled || shortsGuard.connected,
-                remedy = if (shortsGuard.youtubeSuspended) {
-                    "Off, so the whole YouTube app is suspended. Switch on DoomStop Shorts guard " +
-                        "in Settings > Accessibility to get ordinary YouTube back"
-                } else {
-                    "Switch on DoomStop Shorts guard in Settings > Accessibility"
-                },
+                remedy = "Switch on DoomStop Shorts guard in Settings > Accessibility. " +
+                    "YouTube stays available, but Shorts cannot be counted or limited without it.",
             ),
             // Not part of protectionActive either: with the guard off Instagram is suspended
             // once the limit is reached, so scrolling stays unavailable regardless. This line

@@ -15,15 +15,16 @@ midnight carries into the next day, with no cap; extension time does not. The th
 websites are blocked in Chrome permanently, whether or not app time remains or those apps
 are selected.
 
-YouTube stays available, but its Shorts player is closed the moment it opens. That part is
-best-effort rather than a hard limit; what backs it up is that switching the guard off
-suspends the whole YouTube app.
+YouTube Shorts automatically use the same shared daily allowance. Ordinary videos and
+browsing in the YouTube app are unmetered, including after the allowance is exhausted.
+The best-effort accessibility guard exits Shorts only when time is unavailable. If the
+guard stops, YouTube stays available, but Shorts cannot be counted or limited.
 
 Instagram Direct Messages are treated the same way, in reverse: time spent in DMs is never
 counted against the allowance, and once the limit is reached Instagram is left open on the
 messages screen only — a few seconds to reach the inbox, then it closes. This too is
-best-effort and leans on the same rule: with the messaging guard off, Instagram is suspended
-outright at the limit like the other apps.
+best-effort: with the messaging guard off, Instagram is suspended outright at the limit
+like the other apps.
 
 The phone otherwise stays a normal phone: installing apps needs no PIN, and calls, SMS,
 maps, camera, banking and ordinary browsing are untouched.
@@ -37,8 +38,8 @@ Built to [`docs/social-limit-implementation-plan.md`](docs/social-limit-implemen
 | Area | State |
 |---|---|
 | Application, accounting core, enforcement, PIN, UI | Implemented |
-| Unit tests (137, JVM only) | Passing |
-| Instrumented tests | 67 coordinator/DAO/migration/catalog tests passed on a disposable emulator for 0.5.0. Real device-owner policy suites were not rerun for this change; see `docs/test-report.md` §17 |
+| Unit tests (135, JVM only) | Passing |
+| Instrumented tests | 76 coordinator/DAO/migration/catalog tests passed on a disposable emulator for 0.6.0. Real device-owner policy suites were not rerun; see `docs/test-report.md` section 18 |
 | Android lint | No errors; 12 advisory warnings about dependency versions and KTX suggestions |
 | Gate A — device-owner provisioning | See `docs/test-report.md` |
 | Gate B — actual app suspension | See `docs/test-report.md` |
@@ -47,7 +48,7 @@ Built to [`docs/social-limit-implementation-plan.md`](docs/social-limit-implemen
 | Signed release and in-place update | Verified end to end; see `docs/test-report.md` §7.4 |
 | Code review of 2026-09-08 (findings F1-F8) | Fixed and covered by regression tests |
 | Provisioning on the real Pixel 9 | Done 2026-09-09 after a factory reset; see `docs/test-report.md` §10.1 |
-| YouTube Shorts guard (0.2.0) | Measured on the Pixel 9, including one known Chrome gap; see `docs/test-report.md` §10.2 |
+| YouTube Shorts allowance (0.6.0) | Shorts share the allowance; ordinary YouTube stays unmetered. Pixel 9 counting, guard-off availability and Shorts PiP dismissal measured; see `docs/test-report.md` section 18 |
 | Unused-time carryover (0.3.0) | Engine and coordinator tests. Installed on the Pixel 9, where the update carried the previous day's leftover; a real midnight not yet observed there. See `docs/test-report.md` §11 |
 | Instagram messaging mode (0.4.2) | DM recognition and accounting regression coverage; inbox/thread exemption and feed metering measured on the Pixel 9 with IG 448.0.0.52.84. See `docs/test-report.md` §14 for the checks and remaining gaps |
 | Configurable setup (0.5.0) | Default/custom app selection and shared daily minutes. 67 coordinator/DAO/migration/catalog tests passed on a disposable emulator; no phone update or custom-app platform suspension measurement yet. See `docs/test-report.md` §17 |
@@ -66,8 +67,8 @@ Stated plainly, because a limiter that overstates its reach is worse than none:
   the home app, calling/SMS apps, keyboards, Chrome and WebView cannot be selected. Known
   alternative browsers remain permanently blocked rather than metered. Selecting another
   app limits its native app only: it does not add that service's websites to Chrome's fixed
-  blocklist. YouTube can also share the daily allowance; the existing best-effort Shorts
-  guard still applies independently. Instagram's DM exemption applies only when selected.
+  blocklist. YouTube is excluded from the picker: only its Shorts are automatically metered.
+  Instagram's DM exemption applies only when selected.
 - **Browser coverage is a hardcoded list.** A browser that is not in
   `config/BlockedBrowsers.kt` is not blocked. WebView-based apps and in-app browsers inside
   unrelated applications are not covered. This is not Internet filtering.
@@ -118,9 +119,10 @@ Stated plainly, because a limiter that overstates its reach is worse than none:
 - **Anyone with recovery or firmware control can reset the device.** This protects against
   ordinary on-phone circumvention, not against an owner willing to wipe or reflash.
 - **The Shorts guard is best-effort.** It recognises the Shorts player by the names of
-  YouTube's own screen elements, measured on YouTube 21.36.45. A YouTube update can rename
-  them, and the guard would then stop working without any error. What is firm is the rule
-  behind it: while the guard is not running, the whole YouTube app is suspended.
+  YouTube's own screen elements, originally measured on 21.36.45 and rechecked on 21.43.523. A YouTube update can rename
+  them, and the guard would then stop working without any error. If the guard is unavailable,
+  YouTube remains open and Shorts time is unmetered. YouTube screen changes while the
+  monitor process is down cannot be reconstructed, so that unobserved gap is not charged.
 - **Shorts in Chrome are only partly blocked.** Opening a Shorts link or address is blocked.
   Tapping through to a Short inside YouTube's own website is not, because the site changes
   pages without a new page load and Chrome only checks its blocklist on a load. This gap

@@ -115,28 +115,15 @@ class ShortsGuardTest {
         assertFalse(ShortsGuard.isShortsPlayer(listOf("com.example.other:id/reel_watch_player")))
     }
 
-    // -- the rule: guard off means YouTube suspended ------------------------------------------
-
     @Test
-    fun nothingIsSuspendedBeforeSetupOrDuringMaintenance() {
-        assertFalse(ShortsGuard.youtubeMustBeSuspended(false, enabledInSettings = false, connected = false, notConnectedForMs = 1_000_000))
+    fun shortsStayOpenWhileTimeRemains() {
+        assertFalse(ShortsGuard.shouldBackOut(blockingShorts = false, shortsVisible = true))
     }
 
     @Test
-    fun aRunningGuardKeepsYouTubeAvailable() {
-        assertFalse(ShortsGuard.youtubeMustBeSuspended(true, enabledInSettings = true, connected = true, notConnectedForMs = 0))
-    }
-
-    @Test
-    fun switchedOffInSettingsSuspendsAtOnce() {
-        assertTrue(ShortsGuard.youtubeMustBeSuspended(true, enabledInSettings = false, connected = false, notConnectedForMs = 0))
-    }
-
-    @Test
-    fun switchedOnButNotYetBoundGetsTheGraceAndNoMore() {
-        val grace = ShortsGuard.BIND_GRACE_MS
-        assertFalse(ShortsGuard.youtubeMustBeSuspended(true, enabledInSettings = true, connected = false, notConnectedForMs = grace - 1))
-        assertTrue(ShortsGuard.youtubeMustBeSuspended(true, enabledInSettings = true, connected = false, notConnectedForMs = grace))
+    fun exhaustionClosesOnlyShorts() {
+        assertTrue(ShortsGuard.shouldBackOut(blockingShorts = true, shortsVisible = true))
+        assertFalse(ShortsGuard.shouldBackOut(blockingShorts = true, shortsVisible = false))
     }
 
     @Test

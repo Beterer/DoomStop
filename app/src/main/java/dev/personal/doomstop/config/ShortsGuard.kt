@@ -1,10 +1,10 @@
 package dev.personal.doomstop.config
 
 /**
- * YouTube Shorts, blocked inside the YouTube app while ordinary videos stay available.
+ * YouTube Shorts use the shared allowance; ordinary YouTube stays unmetered.
  *
  * An accessibility service ([dev.personal.doomstop.monitor.ShortsGuardService]) watches only
- * the YouTube app and backs out of the Shorts player when it appears. Scope, stated honestly:
+ * the YouTube app, reports Shorts visibility and exits Shorts when the allowance is unavailable.
  *
  *  - This is BEST-EFFORT, not a hard limit. Detection keys on the resource IDs of YouTube's
  *    own views, and YouTube can rename them in any update; when that happens the guard stops
@@ -14,9 +14,8 @@ package dev.personal.doomstop.config
  *    videos either: both use the same hosts, and the API path that differs is inside TLS.
  *    Reading it would need a system certificate, which needs root, which the plan forbids
  *    and which would let anyone switch this app off anyway.
- *  - What gives the guard teeth is [youtubeMustBeSuspended]: while it is not running, the
- *    whole YouTube app is suspended. Switching the guard off does not buy Shorts; it costs
- *    YouTube.
+ *  - If the guard stops, YouTube remains available. Shorts cannot then be recognised,
+ *    metered or closed. This is an intentional availability choice.
  *  - A patched or differently packaged YouTube client is not covered.
  *  - Chrome is covered only partly, by the `youtube.com/shorts` entry in
  *    [BlockedSites.PATH_FILTERS]: a Shorts link is blocked, a Short reached by tapping around
@@ -50,28 +49,7 @@ object ShortsGuard {
     fun isShortsPlayer(visibleViewIds: Collection<String>): Boolean =
         visibleViewIds.any { it.removePrefix("$YOUTUBE_PACKAGE:id/") in SHORTS_PLAYER_VIEW_IDS }
 
-    /**
-     * How long the guard may be switched on in Settings but not yet connected before it is
-     * treated as off. The system binds accessibility services asynchronously, after boot and
-     * after an update; without this allowance YouTube would be suspended and released again
-     * on every restart of this app.
-     */
-    const val BIND_GRACE_MS = 15_000L
-
-    /**
-     * The rule that makes the guard worth having. Switched off in Settings means suspended
-     * at once; switched on but not connected means suspended once the grace has run out,
-     * which also covers a guard that keeps crashing.
-     */
-    fun youtubeMustBeSuspended(
-        enforcing: Boolean,
-        enabledInSettings: Boolean,
-        connected: Boolean,
-        notConnectedForMs: Long,
-    ): Boolean = when {
-        !enforcing -> false
-        connected -> false
-        !enabledInSettings -> true
-        else -> notConnectedForMs >= BIND_GRACE_MS
-    }
+    /** Only recognised Shorts are closed, and only while the shared allowance is unavailable. */
+    fun shouldBackOut(blockingShorts: Boolean, shortsVisible: Boolean): Boolean =
+        blockingShorts && shortsVisible
 }

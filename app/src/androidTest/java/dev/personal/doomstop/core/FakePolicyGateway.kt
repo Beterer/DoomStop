@@ -43,6 +43,7 @@ class FakePolicyGateway(
     var failProtectSelf = false
     var failRelinquish = false
     var unreadableSuspension = false
+    var failNextSuspensionRead = false
     var unreadableChrome = false
 
     var relinquishCalls = 0
@@ -50,14 +51,13 @@ class FakePolicyGateway(
 
     override fun applyEnforcement(
         suspendTargets: Boolean,
-        suspendYouTube: Boolean,
         suspendInstagram: Boolean,
         targetPackages: Set<String>,
     ): SuspensionReport {
         val outcomes = (targetPackages - TargetPackages.INSTAGRAM - ShortsGuard.YOUTUBE_PACKAGE).map { outcome(it, suspendTargets) } +
             (if (TargetPackages.INSTAGRAM in targetPackages) listOf(outcome(TargetPackages.INSTAGRAM, suspendInstagram)) else emptyList()) +
             BlockedBrowsers.ALL.map { outcome(it, true) } +
-            outcome(ShortsGuard.YOUTUBE_PACKAGE, suspendYouTube || (ShortsGuard.YOUTUBE_PACKAGE in targetPackages && suspendTargets))
+            outcome(ShortsGuard.YOUTUBE_PACKAGE, false)
         return SuspensionReport(outcomes)
     }
 
@@ -78,10 +78,16 @@ class FakePolicyGateway(
     override fun manageablePackages(targetPackages: Set<String>): Set<String> =
         targetPackages + BlockedBrowsers.ALL + ShortsGuard.YOUTUBE_PACKAGE
 
-    override fun readSuspended(packageName: String): Boolean? = when {
-        unreadableSuspension -> null
-        packageName !in installedPackages -> null
-        else -> suspended[packageName] ?: false
+    override fun readSuspended(packageName: String): Boolean? {
+        if (failNextSuspensionRead) {
+            failNextSuspensionRead = false
+            error("injected suspension read failure")
+        }
+        return when {
+            unreadableSuspension -> null
+            packageName !in installedPackages -> null
+            else -> suspended[packageName] ?: false
+        }
     }
 
     override fun isInstalled(packageName: String): Boolean = packageName in installedPackages

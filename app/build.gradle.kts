@@ -42,8 +42,11 @@ android {
         // 13 was temporary same-key reset inspection; 14 restores the normal release.
         // 15 adds selected apps and the shared daily allowance to setup.
         // 16 was temporary same-key reset inspection; 17 restores the normal release.
-        versionCode = 17
-        versionName = "0.5.0"
+        // 18 is the temporary same-key inspection build for the authorized test extension.
+        // 20 and 22 are temporary guard-only Pixel Shorts PiP verification builds.
+        // 23 meters only YouTube Shorts and always leaves ordinary YouTube available.
+        versionCode = 23
+        versionName = "0.6.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         // Fixtures deliberately leave policy applied so a person can look at the result.

@@ -37,7 +37,7 @@ class AppCatalog(private val context: Context) {
             .forEach { add(it.activityInfo.packageName) }
     }
 
-    fun unselectablePackages(): Set<String> = essentialPackages() + BlockedBrowsers.ALL
+    fun unselectablePackages(): Set<String> = essentialPackages() + BlockedBrowsers.ALL + ShortsGuard.YOUTUBE_PACKAGE
 
     fun apps(savedPackages: Set<String> = emptySet()): List<AppChoice> {
         val protected = unselectablePackages()

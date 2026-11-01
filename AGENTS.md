@@ -15,8 +15,9 @@ is insufficient.
   base allowance carries forward without a cap; PIN-authorized extension time does not.
 - Chrome's social-site `URLBlocklist` and suspension of known alternative browsers apply
   permanently while enforcement is enabled.
-- Accessibility services provide best-effort YouTube Shorts blocking and Instagram DM
-  recognition. DM time is exempt only while the messaging guard reports a DM screen.
+- Accessibility services provide best-effort YouTube Shorts metering/limiting and Instagram DM
+  recognition. Only Shorts use the shared allowance; ordinary YouTube stays unmetered.
+  YouTube is never suspended, including when its guard stops. DM time is exempt only while the messaging guard reports a DM screen.
   At allowance exhaustion, Instagram permits messaging if the guard is healthy; otherwise
   it is suspended. Other recovery or protection failures hard-suspend Instagram too.
 - A trusted person's six-digit PIN authorizes extensions, recovery and admin actions.

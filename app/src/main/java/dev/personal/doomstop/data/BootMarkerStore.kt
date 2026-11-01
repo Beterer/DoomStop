@@ -39,14 +39,6 @@ class BootMarkerStore(context: Context) {
         set(value) = prefs.edit { putBoolean(KEY_TARGETS_SUSPENDED, value) }
 
     /**
-     * Whether YouTube was suspended because the Shorts guard was off. Defaults to false,
-     * which is what builds before the guard existed left in force. The guard itself cannot
-     * run before the first unlock, so early boot re-applies this rather than judging it.
-     */
-    val youtubeSuspended: Boolean
-        get() = prefs.getBoolean(KEY_YOUTUBE_SUSPENDED, false)
-
-    /**
      * Whether Instagram was fully suspended (as opposed to left in DM-only messaging mode)
      * when the device went down. Defaults to true -- the SAFE value -- so a build that never
      * wrote it, or a marker read before the messaging guard could run, keeps Instagram
@@ -73,23 +65,19 @@ class BootMarkerStore(context: Context) {
     fun record(
         protectionEnabled: Boolean,
         targetsSuspended: Boolean,
-        youtubeSuspended: Boolean,
         instagramSuspended: Boolean,
         nowWallMs: Long,
         targetPackages: Set<String> = LimiterSettings.DEFAULT_TARGET_PACKAGES,
     ) {
         if (this.protectionEnabled == protectionEnabled &&
             this.targetsSuspended == targetsSuspended &&
-            this.youtubeSuspended == youtubeSuspended &&
             this.instagramSuspended == instagramSuspended &&
             this.targetPackages == targetPackages && prefs.contains(KEY_TARGET_PACKAGES) &&
-            prefs.contains(KEY_YOUTUBE_SUSPENDED) &&
             prefs.contains(KEY_INSTAGRAM_SUSPENDED)
         ) return
         prefs.edit(commit = true) {
             putBoolean(KEY_PROTECTION_ENABLED, protectionEnabled)
             putBoolean(KEY_TARGETS_SUSPENDED, targetsSuspended)
-            putBoolean(KEY_YOUTUBE_SUSPENDED, youtubeSuspended)
             putBoolean(KEY_INSTAGRAM_SUSPENDED, instagramSuspended)
             putLong(KEY_UPDATED_AT, nowWallMs)
             putStringSet(KEY_TARGET_PACKAGES, targetPackages)
@@ -100,7 +88,6 @@ class BootMarkerStore(context: Context) {
         const val FILE_NAME = "doomstop_boot_marker"
         const val KEY_PROTECTION_ENABLED = "protection_enabled"
         const val KEY_TARGETS_SUSPENDED = "targets_suspended"
-        const val KEY_YOUTUBE_SUSPENDED = "youtube_suspended"
         const val KEY_INSTAGRAM_SUSPENDED = "instagram_suspended"
         const val KEY_UPDATED_AT = "updated_at_wall_ms"
         const val KEY_TARGET_PACKAGES = "target_packages"

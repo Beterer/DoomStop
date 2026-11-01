@@ -75,12 +75,13 @@ fun SetupScreen(
                     value = preferences.dailyMinutes,
                     onValueChange = { onPreferencesChange(preferences.copy(dailyMinutes = it)) },
                     label = { Text("Daily allowance (minutes)") },
-                    supportingText = { Text("Shared across selected apps. Unused time carries over.") },
+                    supportingText = { Text("Shared across selected apps and YouTube Shorts. Unused time carries over.") },
                     isError = dailyMs == null || dailyMs !in 0L..86_400_000L,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                     singleLine = true, enabled = !busy, modifier = Modifier.fillMaxWidth(),
                 )
             }
+            Text("YouTube Shorts also use this allowance. Ordinary YouTube is unmetered.")
             Button(onClick = { onPreferencesChange(SetupPreferences()) }, enabled = !busy, modifier = Modifier.fillMaxWidth()) {
                 Text("Use defaults")
             }
@@ -121,8 +122,8 @@ fun SetupScreen(
                     Text("Switch on the Shorts guard")
                 }
                 Text(
-                    "Settings > Accessibility > DoomStop Shorts guard. Until it is on, the whole " +
-                        "YouTube app stays suspended.",
+                    "Settings > Accessibility > DoomStop Shorts guard. YouTube stays available " +
+                        "without it, but Shorts cannot be counted or limited.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -262,13 +263,13 @@ private fun ShortsGuardCard(status: LimiterStatus) {
         StatRow("YouTube installed", if (guard.youtubeInstalled) "yes" else "no")
         StatRow("Switched on in Settings", if (guard.enabledInSettings) "yes" else "no")
         StatRow("Running", if (guard.connected) "yes" else "no")
-        StatRow("YouTube suspended because the guard is off", if (guard.youtubeSuspended) "yes" else "no")
+        StatRow("Shorts allowance", if (guard.blockingShorts) "unavailable" else "available")
         Text(
-            "Closes the Shorts player inside YouTube and leaves ordinary videos alone. This is " +
-                "best-effort, not a hard limit: it recognises Shorts by the names of YouTube's " +
-                "own screen elements, and a YouTube update can rename them without any error " +
-                "showing here. The firm part is the fallback: while the guard is not running, " +
-                "the whole YouTube app is suspended.",
+            "Shorts use the shared daily allowance. Ordinary YouTube videos and browsing are " +
+                "free of charge. Once the allowance is unavailable, only the Shorts player is " +
+                "closed. Detection is best-effort: YouTube updates can change its screen " +
+                "elements. If this guard stops, YouTube stays available, but Shorts cannot " +
+                "be counted or limited.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )

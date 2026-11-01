@@ -5,6 +5,7 @@ import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import dev.personal.doomstop.config.TargetPackages
+import dev.personal.doomstop.config.ShortsGuard
 import dev.personal.doomstop.data.BootMarkerStore
 import dev.personal.doomstop.data.LimiterDatabase
 import dev.personal.doomstop.data.PinVerifierEntity
@@ -17,6 +18,7 @@ import dev.personal.doomstop.domain.DayBoundary
 import dev.personal.doomstop.domain.EnforcementReason
 import dev.personal.doomstop.monitor.AppPermissions
 import dev.personal.doomstop.monitor.InstagramGuardProbe
+import dev.personal.doomstop.monitor.ShortsGuardProbe
 import dev.personal.doomstop.monitor.TrackedEvent
 import dev.personal.doomstop.monitor.TrackedEventType
 import dev.personal.doomstop.monitor.UsageReadResult
@@ -103,6 +105,14 @@ private class FakeInstagramGuardProbe : InstagramGuardProbe {
     override fun inDirectMessages(): Boolean = connected && inDm
 }
 
+private class FakeShortsGuardProbe : ShortsGuardProbe {
+    override var connected = true
+    var enabled = true
+    var shortsVisible = false
+    override fun enabledInSettings(): Boolean = enabled
+    override fun inShorts(): Boolean = connected && shortsVisible
+}
+
 /**
  * The regressions from the code review, at the level they actually occurred: several
  * sequential passes against persisted state, and a coordinator rebuilt from that state the
@@ -127,6 +137,8 @@ class CoordinatorRegressionTest {
     private val instagram = TargetPackages.INSTAGRAM
     private val reddit = TargetPackages.REDDIT
     private val instagramGuard = FakeInstagramGuardProbe()
+    private val shortsGuard = FakeShortsGuardProbe()
+    private val youtube = ShortsGuard.YOUTUBE_PACKAGE
 
     @Before
     fun setUp() = runTest {
@@ -136,7 +148,8 @@ class CoordinatorRegressionTest {
             AppPermissions.isScreenInteractive(context) && !AppPermissions.isKeyguardLocked(context),
         )
         database = Room.inMemoryDatabaseBuilder(context, LimiterDatabase::class.java).build()
-        policy = FakePolicyGateway()
+        policy = FakePolicyGateway(installed = TargetPackages.ALL + dev.personal.doomstop.config.BlockedBrowsers.ALL +
+            dev.personal.doomstop.config.BlockedSites.CHROME_PACKAGE + youtube)
         clock = TestClock()
         usage = ScriptedUsage()
         coordinator = newCoordinator()
@@ -181,6 +194,7 @@ class CoordinatorRegressionTest {
         bootMarker = BootMarkerStore(context),
         clock = clock,
         deadlines = DeadlineScheduler(context),
+        guardProbe = shortsGuard,
         instagramGuardProbe = instagramGuard,
     ).also { it.serviceRunning = true }
 
@@ -417,6 +431,146 @@ class CoordinatorRegressionTest {
             assertFalse(it.detail.contains(privatePackage))
             assertFalse(it.detail.contains("MainActivity"))
         }
+    }
+
+    // -- YouTube: only Shorts use the shared allowance ---------------------------------------
+
+    @Test
+    fun youtubeShortsAreChargedButOrdinaryVideosStayFreeAcrossRestart() = runTest {
+        usage.resume(youtube, clock.wallMs)
+        runFor(60_000, steps = 6)
+        assertEquals(0L, coordinator.status.value.chargedMs)
+
+        shortsGuard.shortsVisible = true
+        coordinator.tick(Trigger.GUARD_CHANGE)
+        runFor(15_000, steps = 15)
+        assertEquals("Shorts use the shared allowance without selecting all of YouTube", 15_000L, coordinator.status.value.chargedMs)
+
+        shortsGuard.shortsVisible = false
+        coordinator.tick(Trigger.GUARD_CHANGE)
+        runFor(60_000, steps = 6)
+        assertEquals(15_000L, settledChargeMs())
+        restartProcess()
+        runFor(60_000, steps = 6)
+        assertEquals("ordinary videos cannot inherit the Shorts countdown", 15_000L, settledChargeMs())
+    }
+
+    @Test
+    fun disconnectingTheShortsGuardStopsCountingAndKeepsYouTubeAvailable() = runTest {
+        usage.resume(youtube, clock.wallMs)
+        shortsGuard.shortsVisible = true
+        coordinator.tick(Trigger.GUARD_CHANGE)
+        runFor(10_000, steps = 10)
+        shortsGuard.connected = false
+        shortsGuard.enabled = false
+        coordinator.tick(Trigger.GUARD_CHANGE)
+        runFor(60_000, steps = 6)
+        assertEquals(10_000L, settledChargeMs())
+        assertEquals(false, policy.suspended[youtube])
+    }
+
+    @Test
+    fun shortsExhaustTheSharedAllowanceWithoutSuspendingYouTube() = runTest {
+        usage.resume(youtube, clock.wallMs)
+        shortsGuard.shortsVisible = true
+        coordinator.tick(Trigger.GUARD_CHANGE)
+        runFor(120_000, steps = 120)
+        assertEquals(EnforcementReason.ALLOWANCE_EXHAUSTED, coordinator.status.value.enforcement.reason)
+        assertEquals(true, policy.suspended[reddit])
+        assertEquals(false, policy.suspended[youtube])
+        shortsGuard.shortsVisible = false
+        coordinator.tick(Trigger.GUARD_CHANGE)
+        runFor(60_000, steps = 6)
+        assertEquals(120_000L, settledChargeMs())
+    }
+
+    @Test
+    fun anOldYouTubeSuspensionIsReleasedWhenTheGuardIsOff() = runTest {
+        policy.suspended[youtube] = true
+        shortsGuard.connected = false
+        shortsGuard.enabled = false
+        coordinator.tick(Trigger.GUARD_CHANGE)
+        assertEquals(false, policy.suspended[youtube])
+    }
+
+    @Test
+    fun anActiveShortsSessionSurvivesReplayAndRestartWithoutDoubleCharging() = runTest {
+        usage.resume(youtube, clock.wallMs)
+        shortsGuard.shortsVisible = true
+        coordinator.tick(Trigger.GUARD_CHANGE)
+        runFor(40_000, steps = 40)
+        restartProcess()
+        coordinator.tick(Trigger.UI) // no unobserved interval in this restart
+        runFor(10_000, steps = 10)
+        shortsGuard.shortsVisible = false
+        coordinator.tick(Trigger.GUARD_CHANGE)
+        runFor(60_000, steps = 6)
+        assertEquals(50_000L, settledChargeMs())
+    }
+
+    @Test
+    fun shortsAndAnotherSelectedAppShareTimeWithoutDoubleCharging() = runTest {
+        usage.resume(youtube, clock.wallMs)
+        usage.resume(reddit, clock.wallMs)
+        shortsGuard.shortsVisible = true
+        coordinator.tick(Trigger.GUARD_CHANGE)
+        runFor(10_000, steps = 10)
+        usage.stop(reddit, clock.wallMs)
+        shortsGuard.shortsVisible = false
+        coordinator.tick(Trigger.GUARD_CHANGE)
+        runFor(60_000, steps = 6)
+        assertEquals(10_000L, settledChargeMs())
+    }
+
+    @Test
+    fun aLegacyWholeYouTubeSelectionCannotMeterOrdinaryVideos() = runTest {
+        val settings = database.dao().settings()!!
+        database.dao().upsertSettings(settings.copy(targetPackages = settings.targetPackages + "," + youtube))
+        restartProcess()
+        usage.resume(youtube, clock.wallMs)
+        runFor(60_000, steps = 6)
+        assertEquals(0L, coordinator.status.value.chargedMs)
+        shortsGuard.shortsVisible = true
+        coordinator.tick(Trigger.GUARD_CHANGE)
+        runFor(10_000, steps = 10)
+        assertEquals(10_000L, coordinator.status.value.chargedMs)
+    }
+
+    @Test
+    fun leavingShortsWhileTheProcessIsDownCannotChargeAnOrdinaryVideo() = runTest {
+        usage.resume(youtube, clock.wallMs)
+        shortsGuard.shortsVisible = true
+        coordinator.tick(Trigger.GUARD_CHANGE)
+        runFor(40_000, steps = 40)
+        // The same YouTube activity can switch from Shorts to a normal video without a
+        // lifecycle event. A restarted guard cannot infer which screen filled this gap.
+        clock.advance(60_000)
+        shortsGuard.connected = false
+        shortsGuard.shortsVisible = false
+        restartProcess()
+        coordinator.tick(Trigger.GUARD_CHANGE)
+        runFor(60_000, steps = 6)
+        assertEquals("only the 40 seconds actually observed as Shorts may be charged", 40_000L, settledChargeMs())
+        assertEquals(false, policy.suspended[youtube])
+    }
+
+    @Test
+    fun aFailedRestartTickRetainsProtectionAgainstChargingUnobservedYouTubeTime() = runTest {
+        usage.resume(youtube, clock.wallMs)
+        shortsGuard.shortsVisible = true
+        coordinator.tick(Trigger.GUARD_CHANGE)
+        runFor(40_000, steps = 40)
+        clock.advance(60_000)
+        shortsGuard.shortsVisible = false
+        restartProcess()
+        usage.resume(reddit, clock.wallMs)
+        policy.failNextSuspensionRead = true
+        val failed = runCatching { coordinator.tick(Trigger.POLL) }
+        assertEquals("injected suspension read failure", failed.exceptionOrNull()?.message)
+        usage.stop(reddit, clock.wallMs)
+        coordinator.tick(Trigger.POLL)
+        runFor(60_000, steps = 6)
+        assertEquals(40_000L, settledChargeMs())
     }
 
     // -- Instagram messaging mode ------------------------------------------------------------

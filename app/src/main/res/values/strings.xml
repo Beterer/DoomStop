@@ -16,8 +16,8 @@
 
     <!-- YouTube Shorts guard -->
     <string name="shorts_guard_label">DoomStop Shorts guard</string>
-    <string name="shorts_guard_description">Closes the YouTube Shorts player whenever it opens. Ordinary YouTube videos keep working. It only looks at the YouTube app, and only checks whether the Shorts player is on screen; it does not read titles, comments or anything you type. While this is switched off, DoomStop suspends the whole YouTube app.</string>
-    <string name="shorts_blocked">Shorts blocked by DoomStop</string>
+    <string name="shorts_guard_description">Counts YouTube Shorts against the shared daily allowance and closes Shorts when time is unavailable. Ordinary YouTube videos remain unmetered. It only checks whether the Shorts player is on screen; it does not read titles, comments or anything you type. If this guard is off, YouTube stays available, but Shorts cannot be counted or limited.</string>
+    <string name="shorts_blocked">No Shorts time left today</string>
 
     <!-- Instagram messaging guard -->
     <string name="instagram_guard_label">DoomStop messaging guard</string>
