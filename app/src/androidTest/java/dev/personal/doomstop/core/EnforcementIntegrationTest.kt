@@ -87,7 +87,7 @@ class EnforcementIntegrationTest {
     private lateinit var coordinator: LimiterCoordinator
 
     private val allowanceMs = 60_000L
-    private val extensionMs = 10_000L
+    private val extensionMs = 600_000L
 
     @Before
     fun setUp() = runTest {

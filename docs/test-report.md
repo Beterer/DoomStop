@@ -1182,3 +1182,26 @@ chargedMs=74,824 and 28:46 remaining, with Not counting and no recovery. Both or
 accessibility services were enabled again. The installed APK hash matched the verified
 normal release artifact; temporary device helper/dump files were removed and the disposable
 emulator was stopped.
+
+## 19. 30-day extension quota
+
+DoomStop issues three PIN-authorized 10-minute grants per 30-day period. It persists the
+period start and the spent count in Room. Granting one extension records the authorization
+ticket and credits the current day in the same transaction. A fresh period starts with
+three grants. Redeemed minutes expire at the daily reset.
+
+On the disposable API 36 emulator, both regression cases failed against the earlier APK.
+It accepted a fourth grant and credited the fixture's configured 10 seconds.
+The updated debug app and instrumentation APKs built successfully. All 135 JVM tests passed,
+and lint reported zero errors and 15 advisory warnings.
+
+All 81 tests in the coordinator, DAO, migration and app catalog suites passed on the
+disposable emulator. The coordinator suite verified the 10-minute credit, retention of
+the count and refill date when the coordinator is rebuilt, and renewal at 30 days. A
+reboot with an untrusted clock previously allowed an early grant. The regression test
+confirmed that the quota now holds its count and refill date during recovery and allows
+redemptions again after the clock is corrected and recovery is acknowledged. DAO
+tests covered the cap across days, concurrent requests, replayed tickets and expiration
+without carryover. The real Room 4-to-5 migration preserved the day's charge, carryover
+and previously granted time, including the old ticket. Physical Pixel 9 verification
+remains pending.

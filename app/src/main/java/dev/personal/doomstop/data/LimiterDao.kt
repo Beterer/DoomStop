@@ -7,6 +7,7 @@ import androidx.room.Query
 import androidx.room.Transaction
 import androidx.room.Upsert
 import dev.personal.doomstop.domain.DaySlice
+import dev.personal.doomstop.domain.ExtensionQuota
 import kotlinx.coroutines.flow.Flow
 
 @Dao
@@ -103,6 +104,20 @@ abstract class LimiterDao {
 
     @Query("SELECT * FROM extension_grant WHERE dayId = :dayId ORDER BY grantedAtWallMs DESC")
     abstract suspend fun grantsForDay(dayId: String): List<ExtensionGrantEntity>
+
+    @Query("SELECT periodStartWallMs, used FROM extension_quota WHERE id = 1")
+    abstract suspend fun storedExtensionQuota(): ExtensionQuota?
+
+    @Upsert
+    protected abstract suspend fun saveExtensionQuota(row: ExtensionQuotaEntity)
+
+    @Transaction
+    open suspend fun extensionQuotaAt(nowWallMs: Long): ExtensionQuota {
+        val stored = storedExtensionQuota()
+        val current = stored?.at(nowWallMs) ?: ExtensionQuota(nowWallMs)
+        if (current != stored) saveExtensionQuota(ExtensionQuotaEntity(quota = current))
+        return current
+    }
 
     // -- diagnostics -------------------------------------------------------------------
 
@@ -201,25 +216,20 @@ abstract class LimiterDao {
     }
 
     /**
-     * Redeem one authorization token. Returns true only the first time a given token is
-     * seen, so repeated taps, retries and replays after process death add no extra time.
+     * Redeem one authorization token when a slot is available. A redeemed token can never
+     * add time again. Spending a slot, recording the ticket and crediting today's time are atomic.
      */
     @Transaction
     open suspend fun redeemExtension(
         token: String,
         dayId: String,
         baseAllowanceMs: Long,
-        extensionMs: Long,
         nowWallMs: Long,
     ): Boolean {
-        insertDayIfAbsent(
-            DayBudgetEntity(
-                dayId = dayId,
-                baseAllowanceMs = baseAllowanceMs,
-                chargedMs = 0,
-                extraGrantedMs = 0,
-            )
-        )
+        val quota = extensionQuotaAt(nowWallMs)
+        if (quota.remaining <= 0) return false
+
+        val extensionMs = ExtensionQuota.GRANT_DURATION_MS
         val inserted = insertGrantIfAbsent(
             ExtensionGrantEntity(
                 token = token,
@@ -229,7 +239,9 @@ abstract class LimiterDao {
             )
         )
         if (inserted == -1L) return false
+        dayOrCreate(dayId, baseAllowanceMs)
         addExtra(dayId, extensionMs)
+        saveExtensionQuota(ExtensionQuotaEntity(quota = quota.copy(used = quota.used + 1)))
         return true
     }
 

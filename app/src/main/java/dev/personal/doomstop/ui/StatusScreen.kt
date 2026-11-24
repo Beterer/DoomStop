@@ -21,6 +21,7 @@ import dev.personal.doomstop.config.AppChoice
 import dev.personal.doomstop.core.LimiterStatus
 import dev.personal.doomstop.domain.CheckpointState
 import dev.personal.doomstop.domain.EnforcementReason
+import dev.personal.doomstop.domain.ExtensionQuota
 
 /**
  * The main screen.
@@ -101,11 +102,23 @@ fun StatusScreen(
 
         ProtectionCard(status, onOpenSetup)
 
+        val quota = status.extensionQuota
+        if (quota != null) {
+            SectionCard("Extensions") {
+                StatRow("10-minute extensions left", "${quota.remaining} of ${ExtensionQuota.GRANTS_PER_PERIOD}")
+                StatRow("Refills", formatWallTime(quota.resetsAtWallMs, status.settings.zoneId, includeDate = true))
+                Text(
+                    "Each extension needs the trusted person's PIN. Unused extensions expire at refill.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+        }
+
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Button(
                 onClick = onRequestMoreTime,
                 modifier = Modifier.weight(1f),
-                enabled = status.pinSet,
+                enabled = status.pinSet && status.recovery == null && quota != null && quota.remaining > 0,
             ) {
                 Text("Request more time")
             }
@@ -113,12 +126,6 @@ fun StatusScreen(
                 Text("Settings")
             }
         }
-        Text(
-            "Requesting more time adds ${formatDuration(status.settings.extensionMs)} and needs the " +
-                "trusted person's PIN each time. Websites are not unblocked.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
     }
 }
 

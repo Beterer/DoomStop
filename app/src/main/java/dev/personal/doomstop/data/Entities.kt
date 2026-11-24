@@ -2,9 +2,11 @@ package dev.personal.doomstop.data
 
 import androidx.room.Entity
 import androidx.room.ColumnInfo
+import androidx.room.Embedded
 import androidx.room.PrimaryKey
 import dev.personal.doomstop.domain.Checkpoint
 import dev.personal.doomstop.domain.DayBudget
+import dev.personal.doomstop.domain.ExtensionQuota
 import dev.personal.doomstop.domain.LimiterSettings
 import dev.personal.doomstop.domain.RecoveryRequest
 import dev.personal.doomstop.monitor.TrackedEvent
@@ -24,7 +26,8 @@ import dev.personal.doomstop.monitor.TrackedEventType
 data class SettingsEntity(
     @PrimaryKey val id: Int = SINGLETON_ID,
     val dailyAllowanceMs: Long,
-    val extensionMs: Long,
+    /** Legacy duration retained for database compatibility. New grants have a fixed duration. */
+    val extensionMs: Long = ExtensionQuota.GRANT_DURATION_MS,
     /** Fixed accounting timezone captured at setup; never follows the device's timezone. */
     val zoneId: String,
     val setupCompleted: Boolean,
@@ -39,7 +42,7 @@ data class SettingsEntity(
     val targetPackages: String = LimiterSettings.DEFAULT_TARGET_PACKAGES_ENCODED,
 ) {
     fun toSettings() = LimiterSettings(
-        dailyAllowanceMs, extensionMs, zoneId,
+        dailyAllowanceMs, zoneId,
         targetPackages.split(',').filter { it.isNotBlank() }.toSet(),
     )
 
@@ -222,6 +225,12 @@ data class ExtensionGrantEntity(
     val dayId: String,
     val grantedMs: Long,
     val grantedAtWallMs: Long,
+)
+
+@Entity(tableName = "extension_quota")
+data class ExtensionQuotaEntity(
+    @PrimaryKey val id: Int = 1,
+    @Embedded val quota: ExtensionQuota,
 )
 
 /**

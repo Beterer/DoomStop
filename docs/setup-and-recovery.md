@@ -156,11 +156,11 @@ The readiness line reports whether Shorts metering is available. With YouTube in
 
 ### Defaults
 
-Defaults are Instagram, TikTok and Reddit sharing **30 minutes a day**, with **10 minutes
-per extension**. The reset is at midnight in the timezone captured during setup. Apps,
-daily minutes, extension time and timezone are editable in **Settings** behind the PIN.
-Unused time carries into the next day, with no cap; extension time does not. Changing
-apps or daily minutes preserves already charged time, carryover and granted extensions.
+Defaults are Instagram, TikTok and Reddit sharing **30 minutes a day**. The reset is at
+midnight in the timezone captured during setup. Apps, daily minutes and timezone are
+editable in **Settings** behind the PIN. Unused base allowance carries into the next day
+with no cap. Changing apps or daily minutes preserves already charged time, carryover
+and granted extensions.
 Removing an app releases DoomStop's suspension when its original state was known to be
 unsuspended. An unknown original state still requires explicit recovery, as before.
 
@@ -180,8 +180,11 @@ balances, the PIN or setup completion; existing users are not sent through setup
   screen off resolves it without any of that.
 - When the shared allowance runs out, the selected apps are paused. Android shows **"Blocked by
   work policy"**.
-- **Request more time** asks for the PIN and adds exactly one extension. A fresh PIN entry
-  is needed for each one, and repeated taps cannot duplicate a grant.
+- **Request more time** asks for the PIN and spends one of the three available 10-minute
+  extensions. A fresh PIN entry is needed for each grant. The status screen shows how many
+  are left and when the next 30-day period begins. Unused grants expire at the refill, and
+  unused redeemed minutes expire at the daily reset. Resolve any outstanding recovery to
+  resume refills and redeem extensions.
 - Time left over at midnight carries into the next day, and keeps building up across days
   with no cap. The status screen shows it as **Carried over from yesterday**. Extra time
   is counted as spent last, so any of it left over expires instead of carrying. The amount

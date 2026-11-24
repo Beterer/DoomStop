@@ -146,7 +146,7 @@ private fun DoomStopApp(viewModel: LimiterViewModel, onSecureWindow: (Boolean) -
                     },
                     subtitle = when (current.purpose) {
                         PinPurpose.REQUEST_EXTENSION ->
-                            "The trusted person enters the PIN to add one extension. Websites stay blocked."
+                            "The trusted person enters the PIN to add 10 minutes for today. Websites stay blocked."
 
                         PinPurpose.OPEN_ADMIN -> "The trusted person enters the PIN to change protected settings."
                     },

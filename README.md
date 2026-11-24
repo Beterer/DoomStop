@@ -6,14 +6,15 @@ enforced with Android device-owner policy.
 Setup offers **Use defaults** (Instagram, TikTok and Reddit sharing **30 minutes/day**) or
 **Customize** (choose installed apps and daily minutes). Official Lite/regional variants
 follow their service's checkbox. All selected apps share one allowance; later changes need
-the trusted person's PIN. Upgrading keeps existing limits, balances, PIN and default apps.
+the trusted person's PIN. Upgrading keeps existing daily limits, balances, PIN and default apps.
 
 There is no Start button. Opening a selected app starts counting; switching away or locking
-the phone stops it. When the shared allowance runs out, selected apps are suspended. A
-trusted person holds a six-digit PIN that authorises a fixed extension. Time left unused at
-midnight carries into the next day, with no cap; extension time does not. The three services'
-websites are blocked in Chrome permanently, whether or not app time remains or those apps
-are selected.
+the phone stops it. When the shared allowance runs out, selected apps are suspended. The
+trusted person's six-digit PIN authorises up to three 10-minute extensions per 30-day period.
+Unused extensions expire when the quota refills. Once redeemed, the extra minutes expire at
+the daily reset. Unused base allowance carries into the next day with no cap. The three
+services' websites are blocked in Chrome permanently, whether or not app time remains or
+those apps are selected.
 
 YouTube Shorts automatically use the same shared daily allowance. Ordinary videos and
 browsing in the YouTube app are unmetered, including after the allowance is exhausted.
@@ -109,6 +110,10 @@ Stated plainly, because a limiter that overstates its reach is worse than none:
   Acknowledging later does not bring it back, and with no cap that can be a large balance.
   Carryover has been tested against the accounting core and a real database. On the phone,
   only the carryover decided when 0.3.0 was installed has been seen, not a real midnight.
+- **Extensions are limited to three per 30 days.** The first period starts when the feature
+  becomes active on a configured installation. The status screen shows the next refill and
+  how many 10-minute extensions are available. Each redeemed extension belongs to that day.
+  Refills and redemptions pause while recovery is required.
 - **A controller can be killed or delayed by the OS.** Suspension that is already applied
   persists, but a crash while apps are allowed does not suspend them by magic. Gaps are
   reconciled from usage events on restart; an unreconstructable gap suspends the apps and

@@ -23,6 +23,7 @@ import dev.personal.doomstop.monitor.TrackedEvent
 import dev.personal.doomstop.monitor.TrackedEventType
 import dev.personal.doomstop.monitor.UsageReadResult
 import dev.personal.doomstop.monitor.UsageSource
+import dev.personal.doomstop.security.AuthorizationTicket
 import java.time.ZoneId
 import kotlinx.coroutines.test.runTest
 import org.junit.After
@@ -217,6 +218,50 @@ class CoordinatorRegressionTest {
     }
 
     @Test
+    fun anExtensionAddsTenMinutesAndTheQuotaSurvivesRestart() = runTest {
+        val initialQuota = checkNotNull(coordinator.status.value.extensionQuota)
+        assertEquals(3, initialQuota.remaining)
+        assertTrue(coordinator.grantExtension(AuthorizationTicket("fixed-length", clock.wallMs)))
+        assertEquals(600_000L, coordinator.status.value.extraGrantedMs)
+        assertEquals(2, coordinator.status.value.extensionQuota?.remaining)
+
+        restartProcess()
+        val restarted = coordinator.tick(Trigger.UI)
+        assertEquals(2, restarted.extensionQuota?.remaining)
+        assertEquals(initialQuota.resetsAtWallMs, restarted.extensionQuota?.resetsAtWallMs)
+
+        runFor(initialQuota.resetsAtWallMs - clock.wallMs, steps = 30)
+        assertEquals(3, coordinator.status.value.extensionQuota?.remaining)
+        assertEquals(0L, coordinator.status.value.extraGrantedMs)
+    }
+
+    @Test
+    fun aRefusedRebootClockJumpCannotRefillOrSpendTheExtensionQuota() = runTest {
+        val startWallMs = clock.wallMs
+        val refillWallMs = checkNotNull(coordinator.status.value.extensionQuota).resetsAtWallMs
+        repeat(2) { assertTrue(coordinator.grantExtension(AuthorizationTicket("original-$it", clock.wallMs))) }
+
+        clock.boot = "boot:2"
+        clock.elapsedMs = 1_000L
+        clock.wallMs += 2 * (refillWallMs - startWallMs)
+        val grantedBeforeTick = coordinator.grantExtension(AuthorizationTicket("before-recovery", clock.wallMs))
+        val recovering = coordinator.tick(Trigger.BOOT)
+        assertNotNull(recovering.recovery)
+        assertFalse(grantedBeforeTick)
+        assertEquals(1, recovering.extensionQuota?.remaining)
+        assertEquals(refillWallMs, recovering.extensionQuota?.resetsAtWallMs)
+        assertFalse(coordinator.grantExtension(AuthorizationTicket("during-recovery", clock.wallMs)))
+
+        clock.wallMs = startWallMs + 120_000L
+        val recovered = coordinator.acknowledgeRecovery()
+        assertNull(recovered.recovery)
+        assertEquals(1, recovered.extensionQuota?.remaining)
+        assertEquals(refillWallMs, recovered.extensionQuota?.resetsAtWallMs)
+        assertTrue(coordinator.grantExtension(AuthorizationTicket("after-recovery", clock.wallMs)))
+        assertEquals(0, coordinator.status.value.extensionQuota?.remaining)
+    }
+
+    @Test
     fun selectedCustomAppCountsAcrossRestartWhileUnselectedRedditDoesNot() = runTest {
         val game = "com.example.game"
         policy = FakePolicyGateway(installed = setOf(game, reddit, "com.android.chrome"))
@@ -245,7 +290,7 @@ class CoordinatorRegressionTest {
             "UPDATE settings SET targetPackages = ?", arrayOf(reddit),
         )
         restartProcess()
-        coordinator.updateSettings(0L, extensionMs, zone.id)
+        coordinator.updateSettings(0L, zone.id)
         assertEquals(true, policy.suspended[reddit])
         assertEquals(false, policy.suspended[instagram])
         assertFalse(coordinator.status.value.instagramGuard.messagingModeActive)
@@ -256,7 +301,7 @@ class CoordinatorRegressionTest {
     fun changingAppsSettlesOldUsageAndPreservesTheBalance() = runTest {
         usage.resume(reddit, clock.wallMs)
         runFor(10_000, steps = 10)
-        coordinator.updateSettings(180_000L, extensionMs, zone.id, setOf(instagram))
+        coordinator.updateSettings(180_000L, zone.id, setOf(instagram))
         assertEquals(10_000L, settledChargeMs())
         assertEquals(180_000L, coordinator.status.value.baseAllowanceMs)
         assertFalse(coordinator.status.value.targetVisible)
@@ -269,12 +314,12 @@ class CoordinatorRegressionTest {
 
     @Test
     fun addingAnAlreadyVisibleAppCountsOnlyItsUseAfterTheChangeAndSurvivesRestart() = runTest {
-        coordinator.updateSettings(allowanceMs, extensionMs, zone.id, setOf(reddit))
+        coordinator.updateSettings(allowanceMs, zone.id, setOf(reddit))
         usage.resume(instagram, clock.wallMs)
         runFor(45_000, steps = 15)
         assertEquals(0L, coordinator.status.value.chargedMs)
 
-        coordinator.updateSettings(allowanceMs, extensionMs, zone.id, setOf(reddit, instagram))
+        coordinator.updateSettings(allowanceMs, zone.id, setOf(reddit, instagram))
         runFor(10_000, steps = 10)
         assertEquals(10_000L, coordinator.status.value.chargedMs)
         restartProcess()
@@ -286,9 +331,9 @@ class CoordinatorRegressionTest {
 
     @Test
     fun removingASuspendedAppReleasesItAndKeepsTheSelectedAppLimited() = runTest {
-        coordinator.updateSettings(0L, extensionMs, zone.id)
+        coordinator.updateSettings(0L, zone.id)
         assertEquals(true, policy.suspended[reddit])
-        coordinator.updateSettings(0L, extensionMs, zone.id, setOf(instagram))
+        coordinator.updateSettings(0L, zone.id, setOf(instagram))
         assertEquals(false, policy.suspended[reddit])
         assertEquals(true, policy.suspended[instagram])
         restartProcess()
@@ -319,7 +364,7 @@ class CoordinatorRegressionTest {
     @Test
     fun anEmptySelectionIsRejectedWithoutChangingTheSettings() = runTest {
         val before = database.dao().settings()
-        val result = runCatching { coordinator.updateSettings(0L, extensionMs, zone.id, emptySet()) }
+        val result = runCatching { coordinator.updateSettings(0L, zone.id, emptySet()) }
         assertTrue(result.exceptionOrNull() is IllegalArgumentException)
         assertEquals(before, database.dao().settings())
     }
@@ -338,7 +383,7 @@ class CoordinatorRegressionTest {
             "UPDATE settings SET targetPackages = ?", arrayOf("$essential,$reddit"),
         )
         restartProcess()
-        coordinator.updateSettings(0L, extensionMs, zone.id)
+        coordinator.updateSettings(0L, zone.id)
         assertEquals(false, policy.suspended[essential])
         assertFalse(essential in coordinator.status.value.settings.targetPackages)
         assertEquals(true, policy.suspended[reddit])

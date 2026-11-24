@@ -33,6 +33,34 @@ class MigrationTest {
     )
 
     @Test
+    fun version4PreservesPreviouslyGrantedTimeAndStartsWithAnUnusedQuota() {
+        val name = "migration-4-5-test.db"
+        helper.createDatabase(name, 4).use { db ->
+            db.execSQL("INSERT INTO settings (id, dailyAllowanceMs, extensionMs, zoneId, setupCompleted, maintenanceMode) " +
+                "VALUES (1, 1800000, 300000, 'Europe/Bucharest', 1, 0)")
+            db.execSQL("INSERT INTO day_budget VALUES ('2026-09-08', 1800000, 123456, 300000, 60000)")
+            db.execSQL("INSERT INTO extension_grant VALUES ('old-ticket', '2026-09-08', 300000, 1000)")
+        }
+
+        helper.runMigrationsAndValidate(name, 5, true, *LimiterDatabase.MIGRATIONS).use { db ->
+            db.query("SELECT chargedMs, extraGrantedMs, carriedInMs FROM day_budget").use {
+                assertTrue(it.moveToFirst())
+                assertEquals(123_456L, it.getLong(0))
+                assertEquals(300_000L, it.getLong(1))
+                assertEquals(60_000L, it.getLong(2))
+            }
+            db.query("SELECT token FROM extension_grant").use {
+                assertTrue(it.moveToFirst())
+                assertEquals("old-ticket", it.getString(0))
+            }
+            db.query("SELECT COUNT(*) FROM extension_quota").use {
+                assertTrue(it.moveToFirst())
+                assertEquals(0, it.getInt(0))
+            }
+        }
+    }
+
+    @Test
     fun version3KeepsLimitsAndBalancesAndSelectsTheExistingDefaultApps() {
         val name = "migration-3-4-test.db"
         helper.createDatabase(name, 3).use { db ->
