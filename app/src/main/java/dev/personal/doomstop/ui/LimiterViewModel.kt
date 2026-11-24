@@ -196,9 +196,9 @@ class LimiterViewModel(application: Application) : AndroidViewModel(application)
                 // The ticket is redeemed exactly once; a repeated tap cannot duplicate it.
                 val granted = app.coordinator.grantExtension(ticket)
                 _toast.value = if (granted) {
-                    Toast("Added ${formatDuration(status.value.settings.extensionMs)}. Websites stay blocked.")
+                    Toast("Added 10 minutes for today. Websites stay blocked.")
                 } else {
-                    Toast("That authorization was already used", isError = true)
+                    Toast("Extension unavailable. Check DoomStop's status.", isError = true)
                 }
                 _screen.value = Screen.Status
             }
@@ -328,8 +328,8 @@ class LimiterViewModel(application: Application) : AndroidViewModel(application)
 
     // -- admin actions ----------------------------------------------------------------------
 
-    fun updateSettings(dailyAllowanceMs: Long, extensionMs: Long, zoneId: String, targetPackages: Set<String>) = requireAdmin {
-        app.coordinator.updateSettings(dailyAllowanceMs, extensionMs, zoneId, targetPackages)
+    fun updateSettings(dailyAllowanceMs: Long, zoneId: String, targetPackages: Set<String>) = requireAdmin {
+        app.coordinator.updateSettings(dailyAllowanceMs, zoneId, targetPackages)
         loadApps()
         _toast.value = Toast("Limits updated")
     }

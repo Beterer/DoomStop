@@ -48,7 +48,7 @@ fun AdminScreen(
     restoreReport: RestoreReport?,
     onInteraction: () -> Unit,
     previewAllowance: suspend (Long) -> Pair<Long, Long>,
-    onSave: (dailyMs: Long, extensionMs: Long, zoneId: String, targetPackages: Set<String>) -> Unit,
+    onSave: (dailyMs: Long, zoneId: String, targetPackages: Set<String>) -> Unit,
     onChangePin: () -> Unit,
     onApplyHardening: (HardeningOptions) -> Unit,
     onAcknowledgeRecovery: () -> Unit,
@@ -58,7 +58,6 @@ fun AdminScreen(
 ) {
     var dailyMinutes by remember(status.settings) { mutableStateOf(formatMinutes(status.settings.dailyAllowanceMs)) }
     var targetPackages by remember(status.settings) { mutableStateOf(status.settings.targetPackages) }
-    var extensionMinutes by remember(status.settings) { mutableStateOf(formatMinutes(status.settings.extensionMs)) }
     var zoneId by remember(status.settings) { mutableStateOf(status.settings.zoneId) }
     var preview by remember { mutableStateOf<Pair<Long, Long>?>(null) }
 
@@ -101,14 +100,6 @@ fun AdminScreen(
                 modifier = Modifier.fillMaxWidth(),
             )
             OutlinedTextField(
-                value = extensionMinutes,
-                onValueChange = { extensionMinutes = it; onInteraction() },
-                label = { Text("Each extension (minutes)") },
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
-            )
-            OutlinedTextField(
                 value = zoneId,
                 onValueChange = { zoneId = it; onInteraction() },
                 label = { Text("Accounting timezone") },
@@ -135,10 +126,10 @@ fun AdminScreen(
                 }
             }
             Button(
-                enabled = !busy && targetPackages.isNotEmpty() && minutesToMs(dailyMinutes)?.let { it in 0L..86_400_000L } == true && minutesToMs(extensionMinutes) != null &&
+                enabled = !busy && targetPackages.isNotEmpty() && minutesToMs(dailyMinutes)?.let { it in 0L..86_400_000L } == true &&
                     runCatching { ZoneId.of(zoneId) }.isSuccess,
                 onClick = {
-                    onSave(minutesToMs(dailyMinutes)!!, minutesToMs(extensionMinutes)!!, zoneId, targetPackages)
+                    onSave(minutesToMs(dailyMinutes)!!, zoneId, targetPackages)
                 },
                 modifier = Modifier.fillMaxWidth(),
             ) { Text("Save limits") }

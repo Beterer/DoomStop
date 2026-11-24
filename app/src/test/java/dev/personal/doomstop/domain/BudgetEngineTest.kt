@@ -508,11 +508,10 @@ class BudgetEngineTest {
     // -- balances and grants --------------------------------------------------------------------
 
     @Test
-    fun `an extension adds exactly one configured block`() {
-        val settings = LimiterSettings(30 * 60_000L, 10 * 60_000L, zone.id)
+    fun `an extension reopens an exhausted day`() {
         val day = DayBudget("2026-09-08", 30 * 60_000L, 30 * 60_000L, 0)
         assertTrue(day.isExhausted)
-        val extended = BudgetEngine.withExtension(day, settings)
+        val extended = day.copy(extraGrantedMs = 10 * 60_000L)
         assertEquals(10 * 60_000L, extended.remainingMs)
         assertFalse(extended.isExhausted)
     }

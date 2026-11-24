@@ -25,12 +25,14 @@ import dev.personal.doomstop.data.SettingsEntity
 import dev.personal.doomstop.domain.Anomaly
 import dev.personal.doomstop.domain.BudgetEngine
 import dev.personal.doomstop.domain.Checkpoint
+import dev.personal.doomstop.domain.ClockResolution
 import dev.personal.doomstop.domain.ClockSource
 import dev.personal.doomstop.domain.DayBoundary
 import dev.personal.doomstop.domain.DayBudget
 import dev.personal.doomstop.domain.DaySlice
 import dev.personal.doomstop.domain.EnforcementDecision
 import dev.personal.doomstop.domain.EnforcementReason
+import dev.personal.doomstop.domain.ExtensionQuota
 import dev.personal.doomstop.domain.LimiterSettings
 import dev.personal.doomstop.domain.MonitorHealth
 import dev.personal.doomstop.domain.RecoveryRequest
@@ -910,20 +912,24 @@ class LimiterCoordinator(
      * Websites stay blocked -- this only touches the native-app allowance.
      */
     suspend fun grantExtension(ticket: AuthorizationTicket): Boolean = mutex.withLock {
-        val settingsEntity = dao.settings() ?: return@withLock false
+        val settingsEntity = dao.settings()?.takeIf { it.setupCompleted } ?: return@withLock false
+        val checkpoint = dao.checkpoint()?.toCheckpoint() ?: return@withLock false
+        if (checkpoint.recovery != null) return@withLock false
+        val resolution = resolveActionClock(checkpoint)
+        if (resolution.refusal != null) return@withLock false
+
         val settings = settingsEntity.toSettings()
-        val nowWallMs = acceptedNowLocked()
+        val nowWallMs = resolution.acceptedNowWallMs
         val dayId = boundaryFor(settings).dayIdAt(nowWallMs)
 
         val granted = dao.redeemExtension(
             token = ticket.token,
             dayId = dayId,
             baseAllowanceMs = settings.dailyAllowanceMs,
-            extensionMs = settings.extensionMs,
             nowWallMs = nowWallMs,
         )
         if (granted) {
-            recordDiagnostic("extension_granted", "${settings.extensionMs / 60_000} min", nowWallMs)
+            recordDiagnostic("extension_granted", "${ExtensionQuota.GRANT_DURATION_MS / 60_000L} min", nowWallMs)
         }
         granted
     }.also { if (it) tick(Trigger.ADMIN_ACTION) }
@@ -935,7 +941,6 @@ class LimiterCoordinator(
      */
     suspend fun updateSettings(
         dailyAllowanceMs: Long,
-        extensionMs: Long,
         zoneId: String,
         targetPackages: Set<String>? = null,
     ): LimiterStatus {
@@ -946,7 +951,6 @@ class LimiterCoordinator(
             ZoneId.of(zoneId)
             val updated = existing.copy(
                 dailyAllowanceMs = dailyAllowanceMs.coerceAtLeast(0L),
-                extensionMs = extensionMs.coerceAtLeast(0L),
                 zoneId = zoneId,
                 targetPackages = targetPackages?.sorted()?.joinToString(",") ?: existing.targetPackages,
             )
@@ -1271,15 +1275,14 @@ class LimiterCoordinator(
 
     // -- helpers ------------------------------------------------------------------------------
 
-    /**
-     * The instant accounting is willing to call "now", from inside the lock.
-     *
-     * Authorized actions use this rather than the raw system clock so that a jumped clock
-     * cannot pick the accounting day for an extension or a settings change either.
-     */
     private suspend fun acceptedNowLocked(): Long {
         val previous = dao.checkpoint()?.toCheckpoint() ?: return clock.wallTimeMs()
-        return BudgetEngine.resolveClock(
+        return resolveActionClock(previous).acceptedNowWallMs
+    }
+
+    /** Use the same accounting clock for authorized actions and monitor ticks. */
+    private fun resolveActionClock(previous: Checkpoint): ClockResolution =
+        BudgetEngine.resolveClock(
             previous = previous,
             tick = TickInput(
                 bootId = clock.bootId(),
@@ -1287,22 +1290,19 @@ class LimiterCoordinator(
                 reportedWallMs = clock.wallTimeMs(),
                 eventsAvailable = true,
             ),
-        ).acceptedNowWallMs
-    }
+        )
 
     private fun boundaryFor(settings: LimiterSettings): DayBoundary =
         DayBoundary(runCatching { ZoneId.of(settings.zoneId) }.getOrElse { ZoneId.systemDefault() })
 
     private fun defaultSettings() = LimiterSettings(
         dailyAllowanceMs = LimiterSettings.DEFAULT_DAILY_ALLOWANCE_MS,
-        extensionMs = LimiterSettings.DEFAULT_EXTENSION_MS,
         zoneId = ZoneId.systemDefault().id,
     )
 
     private suspend fun seedDefaultSettings(nowWallMs: Long): SettingsEntity {
         val seeded = SettingsEntity(
             dailyAllowanceMs = LimiterSettings.DEFAULT_DAILY_ALLOWANCE_MS,
-            extensionMs = LimiterSettings.DEFAULT_EXTENSION_MS,
             // The accounting timezone is captured once, here, and then stays put.
             zoneId = ZoneId.systemDefault().id,
             setupCompleted = false,
@@ -1466,6 +1466,11 @@ class LimiterCoordinator(
             carriedInMs = today.carriedInMs,
             chargedMs = today.chargedMs,
             extraGrantedMs = today.extraGrantedMs,
+            extensionQuota = when {
+                !settingsEntity.setupCompleted -> null
+                checkpoint.recovery != null -> dao.storedExtensionQuota()
+                else -> dao.extensionQuotaAt(nowWallMs)
+            },
             nextResetWallMs = boundary.nextBoundaryAfter(nowWallMs),
             targetVisible = tracker.isVisible,
             enforcement = decision,

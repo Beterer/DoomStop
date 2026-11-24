@@ -6,6 +6,7 @@ import dev.personal.doomstop.admin.SuspensionReport
 import dev.personal.doomstop.domain.CheckpointState
 import dev.personal.doomstop.domain.EnforcementDecision
 import dev.personal.doomstop.domain.EnforcementReason
+import dev.personal.doomstop.domain.ExtensionQuota
 import dev.personal.doomstop.domain.LimiterSettings
 import dev.personal.doomstop.domain.MonitorHealth
 import dev.personal.doomstop.domain.RecoveryRequest
@@ -94,6 +95,7 @@ data class LimiterStatus(
     val carriedInMs: Long,
     val chargedMs: Long,
     val extraGrantedMs: Long,
+    val extensionQuota: ExtensionQuota?,
     val nextResetWallMs: Long,
     val targetVisible: Boolean,
     val enforcement: EnforcementDecision,
@@ -231,6 +233,7 @@ data class LimiterStatus(
             carriedInMs = 0,
             chargedMs = 0,
             extraGrantedMs = 0,
+            extensionQuota = null,
             nextResetWallMs = 0,
             targetVisible = false,
             enforcement = EnforcementDecision(false, EnforcementReason.ALLOWANCE_AVAILABLE),

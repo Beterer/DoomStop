@@ -485,10 +485,6 @@ object BudgetEngine {
     fun carryInto(yesterday: DayBudget?, recoveryOutstanding: Boolean): Long =
         if (yesterday == null || recoveryOutstanding) 0L else yesterday.unusedToCarryMs
 
-    /** Grant one configured extension. Extra time lives on the day's row, so it expires with it. */
-    fun withExtension(day: DayBudget, settings: LimiterSettings): DayBudget =
-        day.copy(extraGrantedMs = day.extraGrantedMs + settings.extensionMs)
-
     /**
      * Change today's base allowance without resetting time already charged. If the new
      * total lands below what has been used, the day is simply exhausted and the caller

@@ -30,10 +30,11 @@ import dev.personal.doomstop.domain.LimiterSettings
         PinVerifierEntity::class,
         PinAttemptsEntity::class,
         ExtensionGrantEntity::class,
+        ExtensionQuotaEntity::class,
         DiagnosticEventEntity::class,
         PolicyLedgerEntity::class,
     ],
-    version = 4,
+    version = 5,
     exportSchema = true,
 )
 abstract class LimiterDatabase : RoomDatabase() {
@@ -139,7 +140,17 @@ abstract class LimiterDatabase : RoomDatabase() {
             }
         }
 
-        val MIGRATIONS = arrayOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+        val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS extension_quota (" +
+                        "id INTEGER NOT NULL, periodStartWallMs INTEGER NOT NULL, " +
+                        "used INTEGER NOT NULL, PRIMARY KEY(id))",
+                )
+            }
+        }
+
+        val MIGRATIONS = arrayOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
 
         fun build(context: Context): LimiterDatabase =
             Room.databaseBuilder(context.applicationContext, LimiterDatabase::class.java, NAME)

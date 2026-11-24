@@ -8,6 +8,8 @@ import dev.personal.doomstop.domain.DaySlice
 import dev.personal.doomstop.domain.RecoveryRequest
 import dev.personal.doomstop.monitor.TrackedEvent
 import dev.personal.doomstop.monitor.TrackedEventType
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -106,27 +108,67 @@ class LimiterDaoTest {
     // -- grants -----------------------------------------------------------------------------
 
     @Test
+    fun threeExtensionsAreAvailablePerPeriodWithoutCarryover() = runTest {
+        val periodMs = 30L * 24 * 60 * 60_000
+        val extensionMs = 600_000L
+        val day = "2026-09-08"
+        repeat(3) { assertTrue(dao.redeemExtension("first-$it", day, allowanceMs, 0L)) }
+        val fourthDay = "2026-09-09"
+        assertFalse(dao.redeemExtension("fourth", fourthDay, allowanceMs, periodMs - 1))
+        assertNull(dao.day(fourthDay))
+        assertEquals(3 * extensionMs, dao.day(day)?.extraGrantedMs)
+
+        val secondPeriod = "2026-10-08"
+        assertFalse(dao.redeemExtension("first-0", secondPeriod, allowanceMs, periodMs))
+        assertTrue(dao.redeemExtension("second", secondPeriod, allowanceMs, periodMs))
+        assertEquals(extensionMs, dao.day(secondPeriod)?.extraGrantedMs)
+
+        val laterPeriod = "2027-01-06"
+        val laterWallMs = 4 * periodMs
+        repeat(3) {
+            assertTrue(dao.redeemExtension("later-$it", laterPeriod, allowanceMs, laterWallMs))
+        }
+        assertFalse(dao.redeemExtension("unused-from-second", laterPeriod, allowanceMs, laterWallMs))
+        assertEquals(5 * periodMs, dao.extensionQuotaAt(laterWallMs).resetsAtWallMs)
+        assertFalse(dao.redeemExtension("clock-went-backward", secondPeriod, allowanceMs, periodMs))
+    }
+
+    @Test
+    fun concurrentRequestsCannotOverspendTheQuota() = runTest {
+        val day = "2026-09-08"
+        val granted = List(8) { index ->
+            async { dao.redeemExtension("concurrent-$index", day, allowanceMs, 0L) }
+        }.awaitAll()
+
+        assertEquals(3, granted.count { it })
+        assertEquals(3, dao.grantsForDay(day).size)
+        assertEquals(1_800_000L, dao.day(day)?.extraGrantedMs)
+        assertEquals(0, dao.extensionQuotaAt(0L).remaining)
+    }
+
+    @Test
     fun redeemingTheSameTokenTwiceGrantsTimeOnce() = runTest {
         val token = "ticket-1"
-        assertTrue(dao.redeemExtension(token, "2026-09-08", allowanceMs, 600_000L, 0L))
+        assertTrue(dao.redeemExtension(token, "2026-09-08", allowanceMs, 0L))
         // A double tap, a retried coroutine, or a replay after process death.
-        assertFalse(dao.redeemExtension(token, "2026-09-08", allowanceMs, 600_000L, 0L))
-        assertFalse(dao.redeemExtension(token, "2026-09-08", allowanceMs, 600_000L, 0L))
+        assertFalse(dao.redeemExtension(token, "2026-09-08", allowanceMs, 0L))
+        assertFalse(dao.redeemExtension(token, "2026-09-08", allowanceMs, 0L))
 
         assertEquals(600_000L, dao.day("2026-09-08")?.extraGrantedMs)
         assertEquals(1, dao.grantsForDay("2026-09-08").size)
+        assertEquals(2, dao.extensionQuotaAt(0L).remaining)
     }
 
     @Test
     fun distinctTokensEachGrantOneExtension() = runTest {
-        assertTrue(dao.redeemExtension("a", "2026-09-08", allowanceMs, 600_000L, 0L))
-        assertTrue(dao.redeemExtension("b", "2026-09-08", allowanceMs, 600_000L, 0L))
+        assertTrue(dao.redeemExtension("a", "2026-09-08", allowanceMs, 0L))
+        assertTrue(dao.redeemExtension("b", "2026-09-08", allowanceMs, 0L))
         assertEquals(1_200_000L, dao.day("2026-09-08")?.extraGrantedMs)
     }
 
     @Test
     fun extraTimeDoesNotLeakIntoTheNextDay() = runTest {
-        dao.redeemExtension("a", "2026-09-08", allowanceMs, 600_000L, 0L)
+        dao.redeemExtension("a", "2026-09-08", allowanceMs, 0L)
         val tomorrow = dao.dayOrCreate("2026-09-09", allowanceMs)
         assertEquals(0L, tomorrow.extraGrantedMs)
         assertEquals(allowanceMs, tomorrow.baseAllowanceMs)
