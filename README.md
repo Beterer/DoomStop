@@ -98,7 +98,9 @@ Stated plainly, because a limiter that overstates its reach is worse than none:
   records (whichever limit is reached first), without messages, URLs, activity class names
   or PIN data. A second false-drain report on 2026-10-08 has no confirmed root cause yet;
   adding diagnostics does not establish that overnight metering is fixed. Export promptly
-  using `scripts/Export-DoomStopDiagnostics.ps1`; see the setup/recovery guide, section 9.
+  using `scripts/Export-DoomStopDiagnostics.ps1`. Open an existing export offline with
+  `scripts/Analyze-DoomStopDiagnostics.ps1` to review committed charges, possible explanations
+  and missing evidence. See the [setup and recovery guide](docs/setup-and-recovery.md#9-when-something-looks-wrong).
 - **The accounting clock is not the phone's clock.** It advances by measured elapsed time,
   and the system clock is adopted only while the two agree. A larger disagreement is refused
   and needs the PIN holder, which also means a genuinely corrected clock needs acknowledging.

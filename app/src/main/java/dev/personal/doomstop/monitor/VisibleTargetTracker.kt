@@ -54,6 +54,7 @@ data class TrackerSnapshot(
         val className: String,
         val state: String,
         val ageMs: Long,
+        val sinceWallMs: Long,
     )
 }
 
@@ -267,6 +268,7 @@ class VisibleTargetTracker(
                     else -> "paused"
                 },
                 ageMs = (logicalNowMs - it.sinceMs).coerceAtLeast(0L),
+                sinceWallMs = it.sinceMs,
             )
         },
     )

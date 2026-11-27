@@ -1205,3 +1205,29 @@ tests covered the cap across days, concurrent requests, replayed tickets and exp
 without carryover. The real Room 4-to-5 migration preserved the day's charge, carryover
 and previously granted time, including the old ticket. Physical Pixel 9 verification
 remains pending.
+
+## 20. Offline allowance diagnostics
+
+`scripts/Test-DoomStopDiagnostics.ps1` runs the analyzer against three sanitized JSONL
+fixtures on Windows PowerShell 5.1. The normal legacy export placed and reconciled
+9,000 ms, including a charge split at the accounting-day boundary. A pause remained
+inside its charged interval until the recorded stop, and an unrelated Shorts mask event
+did not change the inferred Reddit attribution. The test also checked the previous
+accounting day and the input hash.
+
+The Instagram fixture recreates the event ordering from section 16 with synthetic
+journal rows and an opaque activity reference. It placed all 10,190 ms and flagged
+8,814 ms of continued charging after the stop. The fixture records no intervening
+pause, the same reference remained resumed, and a live screen-off observation ended
+charging. The incomplete fixture placed 3,000 ms, preserved 4,000 ms whose exact
+timing was unavailable, and reported a separate +5,000 ms difference between the
+daily charge and readable journal. It also surfaced unreadable and truncated records
+and the recorded loss of the usage-event source.
+
+A retained legacy export of roughly 12 MB produced 35 timeline entries, reconciled
+to its snapshot, and retained its input hash.
+
+All 135 JVM tests passed. The debug and instrumentation APKs built successfully, and
+lint reported zero errors and 15 warnings. The instrumentation test for the new export
+fields compiled. It still needs a runtime check on Android. Verification used saved
+exports and local builds without a phone connection or APK installation.

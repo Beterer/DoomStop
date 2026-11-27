@@ -50,7 +50,11 @@ import dev.personal.doomstop.monitor.TrackerState
 import dev.personal.doomstop.monitor.UsageSource
 import dev.personal.doomstop.monitor.VisibleTargetTracker
 import dev.personal.doomstop.security.AuthorizationTicket
+import java.security.SecureRandom
 import java.time.ZoneId
+import java.util.HexFormat
+import javax.crypto.Mac
+import javax.crypto.spec.SecretKeySpec
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -163,6 +167,12 @@ class LimiterCoordinator(
     private var lastTraceElapsedMs: Long? = null
     private var lastTraceState: String? = null
     private var lastTracePruneElapsedMs: Long? = null
+    // Coordinator calls are serialized by mutex. Keep the key only in memory so class
+    // names cannot be recovered by comparing exported references to a list of known names.
+    private val traceActivityMac by lazy {
+        val key = ByteArray(32).also { SecureRandom().nextBytes(it) }
+        Mac.getInstance("HmacSHA256").apply { init(SecretKeySpec(key, algorithm)) }
+    }
 
     private val _status = MutableStateFlow(LimiterStatus.initial(defaultSettings()))
     val status: StateFlow<LimiterStatus> = _status.asStateFlow()
@@ -1360,6 +1370,9 @@ class LimiterCoordinator(
         tracker.isMasked(ShortsGuard.YOUTUBE_PACKAGE), guardProbe.connected,
     ).joinToString("|")
 
+    private fun traceActivityRef(packageName: String, className: String?): String =
+        HexFormat.of().formatHex(traceActivityMac.doFinal("$packageName|${className.orEmpty()}".toByteArray()), 0, 12)
+
     private fun accountingTrace(
         trigger: String,
         previous: Checkpoint,
@@ -1375,8 +1388,10 @@ class LimiterCoordinator(
         usageAvailable: Boolean,
         force: Boolean = false,
     ): DiagnosticEventEntity? {
-        fun relevant(event: TrackedEvent): Boolean = event.packageName in meteredPackages ||
-            event.type !in setOf(TrackedEventType.ACTIVITY_RESUMED, TrackedEventType.ACTIVITY_PAUSED, TrackedEventType.ACTIVITY_STOPPED)
+        fun isLifecycle(event: TrackedEvent): Boolean = event.type in setOf(
+            TrackedEventType.ACTIVITY_RESUMED, TrackedEventType.ACTIVITY_PAUSED, TrackedEventType.ACTIVITY_STOPPED,
+        )
+        fun relevant(event: TrackedEvent): Boolean = event.packageName in meteredPackages || !isLifecycle(event)
         val relevantEvents = events.filter(::relevant)
         val relevantDropped = dropped.filter(::relevant)
         val heartbeatDue = lastTraceElapsedMs?.let { nowElapsedMs - it >= TRACE_HEARTBEAT_MS } ?: true
@@ -1395,6 +1410,9 @@ class LimiterCoordinator(
                 SUSPENSION_OBSERVATION_CLASS -> "suspension_readback"
                 else -> "usage_events"
             })
+            .apply {
+                if (isLifecycle(event)) put("activityRef", traceActivityRef(event.packageName, event.className))
+            }
         val detail = JSONObject()
             .put("schema", 1)
             .put("trigger", trigger)
@@ -1428,6 +1446,8 @@ class LimiterCoordinator(
             .put("droppedCount", relevantDropped.size)
             .put("activities", JSONArray(tracker.snapshot().activities.map {
                 JSONObject().put("target", it.packageName).put("state", it.state).put("ageMs", it.ageMs)
+                    .put("since", it.sinceWallMs)
+                    .put("activityRef", traceActivityRef(it.packageName, it.className))
             }))
         return DiagnosticEventEntity(atWallMs = acceptedNowMs, type = "accounting_trace", detail = detail.toString())
     }
