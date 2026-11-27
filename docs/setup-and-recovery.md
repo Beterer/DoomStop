@@ -366,6 +366,40 @@ journal can reach the record limit earlier than seven days. The export contains 
 verifier, PIN attempts, activity class names, messages, URLs or window content. Target
 identities and usage timestamps still describe personal usage, so keep the export private.
 
+### Explain a countdown from a saved export
+
+Run this in Windows PowerShell from the repository root. The analyzer reads the JSONL
+file locally and leaves it intact. It requires no phone connection, ADB, or app install.
+
+```powershell
+.\scripts\Analyze-DoomStopDiagnostics.ps1 -BundlePath 'C:\path\to\doomstop-export.jsonl' -Day '2026-10-19'
+```
+
+Omit `-Day` to use the day in the export header. The report displays UTC timestamps and
+uses the day assignments recorded by DoomStop in its fixed accounting timezone. It shows
+committed charges, including any settled open tail. The remaining provisional countdown
+on the phone has no committed debit in the export.
+
+The report uses recorded visibility changes to place the debit and correlates them with
+lifecycle, screen and guard events. App, screen and cause are estimates. A pause can
+leave a target visible in Android, so charging can continue until another event changes
+visibility. The analyzer flags cases such as continued charging after an unpaired stop
+or a stop that arrived after settlement. A matching reference identifies the tracker's
+package/class key. Android can reuse that key for multiple activity instances.
+
+New traces carry an opaque activity reference and the retained state's timestamp. The
+reference is generated with a process-local secret and changes across monitor process
+restarts. Class names and the secret stay out of the export. Older traces remain readable
+with package-level evidence. The export header stores an independent daily charge only
+for its snapshot day. Retention, missing records and balance adjustments can explain
+differences from the original committed charges.
+
+Try the sanitized reproduction of the Instagram `ModalActivity` incident:
+
+```powershell
+.\scripts\Analyze-DoomStopDiagnostics.ps1 -BundlePath .\scripts\fixtures\diagnostics\instagram-modal-stopped-without-pause.jsonl
+```
+
 This is an investigation tool, not an automatic refund or a new way to bypass the PIN.
 There is no exported reset endpoint. A one-time operator repair must target the current
 accounting day, preserve other balances/settings, and record the old charge and reason.

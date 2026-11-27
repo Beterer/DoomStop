@@ -478,6 +478,33 @@ class CoordinatorRegressionTest {
         }
     }
 
+    @Test
+    fun traceCorrelatesLifecycleWithRetainedActivityWithoutExportingItsName() = runTest {
+        val resumedAt = clock.wallMs
+        usage.resume(reddit, resumedAt)
+        runFor(1_000)
+        usage.stop(reddit, clock.wallMs)
+        runFor(1_000)
+
+        val traces = database.dao().recentDiagnostics(100)
+            .filter { it.type == "accounting_trace" }
+        val details = traces.map { org.json.JSONObject(it.detail) }
+        fun objects(field: String) = details.flatMap { detail ->
+            val array = detail.getJSONArray(field)
+            List(array.length()) { array.getJSONObject(it) }
+        }
+        val resume = objects("events").first { it.getString("type") == "ACTIVITY_RESUMED" }
+        val stop = objects("events").first { it.getString("type") == "ACTIVITY_STOPPED" }
+        val activity = objects("activities").first { it.getString("target") == reddit }
+
+        val ref = resume.getString("activityRef")
+        assertTrue(ref.isNotBlank())
+        assertEquals(ref, stop.getString("activityRef"))
+        assertEquals(ref, activity.getString("activityRef"))
+        assertEquals(resumedAt, activity.getLong("since"))
+        assertFalse(traces.any { it.detail.contains("MainActivity") })
+    }
+
     // -- YouTube: only Shorts use the shared allowance ---------------------------------------
 
     @Test
